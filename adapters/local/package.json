@@ -1,0 +1,37 @@
+{
+  "name": "@hostmark/adapter-local",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node build.mjs",
+    "smoke": "node --import tsx scripts/smoke.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@jsquash/jpeg": "1.6.0",
+    "@jsquash/png": "3.1.1",
+    "@jsquash/resize": "2.1.1",
+    "@jsquash/webp": "1.5.0"
+  },
+  "devDependencies": {
+    "@hono/node-server": "2.1.5",
+    "@hostmark/contract": "workspace:*",
+    "@hostmark/core": "workspace:*",
+    "@hostmark/db": "workspace:*",
+    "@hostmark/image": "workspace:*",
+    "@hostmark/storage-s3": "workspace:*",
+    "@hostmark/telemetry": "workspace:*",
+    "aws4fetch": "1.0.20",
+    "bullmq": "6.5.3",
+    "croner": "11.0.0",
+    "esbuild": "0.28.2",
+    "hono": "4.13.14",
+    "ioredis": "6.0.0",
+    "postgres": "4.0.0",
+    "tsx": "4.23.15",
+    "zod": "4.6.7"
+  }
+}

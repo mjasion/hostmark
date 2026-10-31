@@ -1,0 +1,30 @@
+{
+  "name": "@hostmark/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "exports": {
+    ".": "./src/index.ts",
+    "./ports": "./src/ports.ts",
+    "./errors": "./src/errors.ts",
+    "./test/contract": "./test/contract/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hono/zod-openapi": "1.6.3",
+    "@hostmark/contract": "workspace:*",
+    "@hostmark/db": "workspace:*",
+    "@hostmark/telemetry": "workspace:*",
+    "@opentelemetry/api": "1.10.0",
+    "better-auth": "1.7.14",
+    "drizzle-orm": "0.45.4",
+    "hono": "4.13.14",
+    "uuid": "14.0.3",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {}
+}

@@ -1,0 +1,12 @@
+packages:
+  - apps/*
+  - packages/*
+  - adapters/*
+
+storeDir: .pnpm-store
+
+# The lockfile pins two releases that are younger than minimumReleaseAge (pnpm 12 refuses them otherwise). They are
+# named here instead of switching the check off. After 2026-11-01T05:07:30Z both are old enough: drop this list.
+minimumReleaseAgeExclude:
+  - bullmq@6.5.3
+  - set-cookie-parser@3.2.2

@@ -1,0 +1,183 @@
+name: hostmark
+
+x-app-env: &app-env
+  DATABASE_URL: postgres://${POSTGRES_USER:?copy .env.example to .env}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+  REDIS_URL: redis://redis:6379
+  S3_ENDPOINT: http://minio:9000
+  # Presigned URLs sign the host, so they must carry the address the host machine (browser, curl) reaches.
+  S3_PUBLIC_ENDPOINT: http://127.0.0.1:59000
+  S3_BUCKET: ${S3_BUCKET:?}
+  S3_REGION: us-east-1
+  S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+  S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+  OTLP_ENDPOINT: http://lgtm:4318
+  QUEUE_BACKOFF_SCALE: ${QUEUE_BACKOFF_SCALE:-1}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+
+# Every service that runs the app image carries the build. `build:` alone does not stop compose from trying to pull
+# `hostmark-local:dev` when it is missing, so `pull_policy: build` says to build instead.
+x-app: &app
+  image: hostmark-local:dev
+  pull_policy: build
+  build:
+    context: ../..
+    dockerfile: adapters/local/Dockerfile
+    args:
+      # Becomes service.version and the x-version header; try APP_VERSION=$(git rev-parse --short HEAD).
+      APP_VERSION: ${APP_VERSION:-local}
+  environment: *app-env
+
+services:
+  postgres:
+    restart: unless-stopped
+    image: postgres:17.9-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:?}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - 127.0.0.1:55432:5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    restart: unless-stopped
+    image: redis:7.4.8-alpine
+    # AOF keeps queued jobs across a container restart.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - 127.0.0.1:56379:6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # minio/minio is gone from Docker Hub; this is the Chainguard build. The image has no shell or curl, so
+  # it has no healthcheck: minio-init waits for the server instead.
+  minio:
+    restart: unless-stopped
+    image: cgr.dev/chainguard/minio@sha256:3b6e40c30ecd5cea627e382ff0b82ca841f58c52294578787043ee80c8ef7c82
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      # MinIO has no per-bucket CORS API (501); this server-wide setting is what lets browsers PUT and GET.
+      MINIO_API_CORS_ALLOW_ORIGIN: "*"
+    volumes:
+      - minio-data:/data
+    ports:
+      - 127.0.0.1:59000:9000
+
+  minio-init:
+    <<: *app
+    command: ["node", "dist/init-bucket.js"]
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+
+  migrate:
+    <<: *app
+    command: ["node", "dist/migrate.js"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  seed:
+    <<: *app
+    command: ["node", "dist/seed.js"]
+    restart: "no"
+    environment:
+      <<: *app-env
+      SEED_API_KEY: ${SEED_API_KEY:?}
+      SEED_ADMIN_API_KEY: ${SEED_ADMIN_API_KEY:?}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  lgtm:
+    restart: unless-stopped
+    image: grafana/otel-lgtm:0.39.0
+    volumes:
+      - lgtm-data:/data
+    ports:
+      - 127.0.0.1:53000:3000
+      - 127.0.0.1:54318:4318
+
+  api:
+    <<: *app
+    command: ["node", "--enable-source-maps", "dist/api.js"]
+    environment:
+      <<: *app-env
+      PORT: "8080"
+    ports:
+      - 127.0.0.1:58080:8080
+    restart: unless-stopped
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      lgtm:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/api/health/deep').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  # chaos=crash kills this process with exit code 1; the restart policy brings it back and BullMQ hands the
+  # job over once its lock (60 s) has expired.
+  worker:
+    <<: *app
+    command: ["node", "--enable-source-maps", "dist/worker.js"]
+    restart: unless-stopped
+    # Peak memory of one 50 MP job and of four at once: see D79. memswap_limit equals mem_limit, so the result does not
+    # depend on how much swap the host has. A process that reaches the limit is killed by the kernel; the jobs in
+    # flight stall and are started again (D63).
+    mem_limit: 4g
+    memswap_limit: 4g
+    # Lets a job in progress finish on SIGTERM (lock duration is 60 s).
+    stop_grace_period: 70s
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      lgtm:
+        condition: service_started
+
+  scheduler:
+    <<: *app
+    command: ["node", "--enable-source-maps", "dist/scheduler.js"]
+    restart: unless-stopped
+    # On SIGTERM a run in progress may take up to 20 s to finish (scheduler.ts); the default grace is 10 s.
+    stop_grace_period: 30s
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      lgtm:
+        condition: service_started
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  lgtm-data:

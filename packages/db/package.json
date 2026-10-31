@@ -1,0 +1,28 @@
+{
+  "name": "@hostmark/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts",
+    "./schema": "./src/schema.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "generate": "drizzle-kit generate --name initial",
+    "migrate": "node --import tsx src/cli/migrate.ts",
+    "seed": "node --import tsx src/cli/seed.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.4",
+    "postgres": "4.0.0"
+  },
+  "devDependencies": {
+    "drizzle-kit": "0.31.11",
+    "tsx": "4.23.15",
+    "@hostmark/contract": "workspace:*",
+    "@neondatabase/serverless": "1.2.0"
+  }
+}

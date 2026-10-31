@@ -1,0 +1,153 @@
+import type { JobMessage } from '@hostmark/contract';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { Queue } from '../../src/ports';
+
+/** One delivery of a message with the redelivery bookkeeping an adapter must provide. */
+export interface QueueDelivery {
+  message: JobMessage;
+  /** 1 on the first delivery, +1 on each redelivery after a failure. */
+  attempt: number;
+  ack(): Promise<void>;
+  /** Reports a failed handler run: redelivered, or dead-lettered when the attempts are used up. */
+  fail(): Promise<void>;
+}
+
+/** Optional capability: consuming with acknowledgement. Without it the redelivery tests are skipped. */
+export interface QueueConsumeHarness {
+  /** Attempts after which a failing message is dead-lettered (MAX_ATTEMPTS). */
+  maxAttempts: number;
+  next(waitMs: number): Promise<QueueDelivery | null>;
+  /** Messages that reached the dead letter queue, waiting up to `waitMs` for `count` of them. */
+  deadLettered(count: number, waitMs: number): Promise<JobMessage[]>;
+}
+
+export interface QueueContractHarness {
+  queue: Queue;
+  consume?: QueueConsumeHarness;
+  /** Waits up to `waitMs` for messages and returns what arrived (at most `max`), in delivery order. */
+  receive(max: number, waitMs: number): Promise<JobMessage[]>;
+  close?(): Promise<void>;
+}
+
+const message = (fileId: string): JobMessage => ({
+  v: 1,
+  type: 'process_image',
+  jobId: crypto.randomUUID(),
+  fileId,
+  enqueuedAt: new Date().toISOString(),
+  chaos: 'none',
+});
+
+/** The next delivery of `jobId`; deliveries of other messages (leftovers of earlier tests) are acknowledged away. */
+async function nextFor(consume: QueueConsumeHarness, jobId: string): Promise<QueueDelivery> {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const d = await consume.next(2000);
+    if (!d) continue;
+    if (d.message.jobId === jobId) return d;
+    await d.ack();
+  }
+  throw new Error(`no delivery for ${jobId}`);
+}
+
+/** Behaviour every Queue adapter must show. The factory builds a fresh, empty queue. */
+export function describeQueueContract(name: string, factory: () => Promise<QueueContractHarness>): void {
+  describe(`Queue contract: ${name}`, () => {
+    let h: QueueContractHarness;
+    beforeAll(async () => {
+      h = await factory();
+    });
+    afterAll(async () => {
+      await h?.close?.();
+    });
+
+    it('delivers a sent message unchanged', async () => {
+      const msg = message(crypto.randomUUID());
+      await h.queue.send(msg);
+      const got = await h.receive(1, 10_000);
+      expect(got).toEqual([msg]);
+    });
+
+    it('delivers every message of a batch', async () => {
+      const msgs = Array.from({ length: 12 }, () => message(crypto.randomUUID()));
+      await h.queue.sendBatch(msgs);
+      const got: JobMessage[] = [];
+      const deadline = Date.now() + 15_000;
+      while (got.length < msgs.length && Date.now() < deadline)
+        got.push(...(await h.receive(msgs.length, 2000)));
+      expect(got.map((m) => m.jobId).sort()).toEqual(msgs.map((m) => m.jobId).sort());
+    });
+
+    it('accepts an empty batch', async () => {
+      await expect(h.queue.sendBatch([])).resolves.toBeUndefined();
+    });
+
+    it('holds a delayed message back and delivers it afterwards', async () => {
+      const msg = message(crypto.randomUUID());
+      await h.queue.send(msg, { delaySeconds: 2 });
+      expect(await h.receive(1, 500)).toEqual([]);
+      const got = await h.receive(1, 10_000);
+      expect(got).toEqual([msg]);
+    });
+
+    it('delivers a batch above the 100 message limit of the platform queues', async () => {
+      const msgs = Array.from({ length: 250 }, () => message(crypto.randomUUID()));
+      await h.queue.sendBatch(msgs);
+      const got: JobMessage[] = [];
+      const deadline = Date.now() + 30_000;
+      while (got.length < msgs.length && Date.now() < deadline)
+        got.push(...(await h.receive(msgs.length, 2000)));
+      expect(got.map((m) => m.jobId).sort()).toEqual(msgs.map((m) => m.jobId).sort());
+    });
+
+    it('pings when it can', async (ctx) => {
+      if (!h.queue.ping) return ctx.skip();
+      await expect(h.queue.ping()).resolves.toBeUndefined();
+    });
+
+    describe('consume with acknowledgement', () => {
+      it('redelivers a failed message with a higher attempt number', async (ctx) => {
+        if (!h.consume) return ctx.skip();
+        const msg = message(crypto.randomUUID());
+        await h.queue.send(msg);
+        const first = await nextFor(h.consume, msg.jobId);
+        expect(first.attempt).toBe(1);
+        await first.fail();
+        const second = await nextFor(h.consume, msg.jobId);
+        expect(second.attempt).toBe(2);
+        expect(second.message).toEqual(msg);
+        await second.ack();
+      });
+
+      it('does not redeliver an acknowledged message', async (ctx) => {
+        if (!h.consume) return ctx.skip();
+        const msg = message(crypto.randomUUID());
+        await h.queue.send(msg);
+        await (await nextFor(h.consume, msg.jobId)).ack();
+        for (let i = 0; i < 3; i++) {
+          const again = await h.consume.next(500);
+          if (again) {
+            expect(again.message.jobId).not.toBe(msg.jobId);
+            await again.ack();
+          }
+        }
+      });
+
+      it('moves a message to the dead letter queue after maxAttempts failures', async (ctx) => {
+        if (!h.consume) return ctx.skip();
+        const msg = message(crypto.randomUUID());
+        await h.queue.send(msg);
+        for (let attempt = 1; attempt <= h.consume.maxAttempts; attempt++) {
+          const d = await nextFor(h.consume, msg.jobId);
+          expect(d.attempt).toBe(attempt);
+          await d.fail();
+        }
+        const dead = await h.consume.deadLettered(1, 15_000);
+        expect(dead.map((m) => m.jobId)).toContain(msg.jobId);
+        // Nothing is left to deliver once it is dead.
+        const again = await h.consume.next(500);
+        expect(again?.message.jobId).not.toBe(msg.jobId);
+      });
+    });
+  });
+}

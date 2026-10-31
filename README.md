@@ -15,7 +15,9 @@ what differ between platforms.
 
 ## Status
 
-Under construction. Stages E0 to E3 are in progress, see the plan.
+Stage E0 is done: the API, worker and scheduler run locally on a Docker Compose stack, see
+[`adapters/local/README.md`](adapters/local/README.md). There is no frontend yet and nothing is deployed. The
+next stages are in the plan.
 
 ## Licence
 
