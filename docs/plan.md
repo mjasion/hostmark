@@ -50,9 +50,34 @@ Sign-in cannot be a k6 load path if the limiter is on (3 per 10 s per address, D
 created in setup. `pending_upload` rows of cancelled uploads are hidden from the gallery and remain until cleanup,
 so counts of rows and `daily_stats` include them.
 
+Done in `load/` (D90 to D99). Two things differ from the plan: S7 runs in a reduced form (seconds instead of
+minutes), and S15 is recorded as skipped: there is no CDN or purge API locally. The worker decodes images in
+WebAssembly on one JavaScript thread, so a Node worker scales by process, not by concurrency: locally two replicas
+with `WORKER_CONCURRENCY=1` (D96, D97). S4 at its specified rate is run against that default and passes or fails
+for the reason its result records.
+
 Results must account for three behaviours found in the E0 review: the worker memory limit under a sustained
 stream of maximum-size images (D79), `files.attempts` over-counting after an abandoned send, and a repeat killer
 using up an innocent sibling's attempts (D64).
+
+Later after E2 (found in the E2 reviews, none blocks E3):
+
+- D79 still quotes concurrency 4 with a margin of about 300 MB; it was about 400 MiB, and 3.7 GB was 3.6 GiB. It is
+  no longer the default.
+- D97 says a second process "doubles" throughput: it is 1.29 to 2.49 files/s (1.93 times), and the memory it saves
+  against concurrency 4 is small (3.2 against 3.6 GiB).
+- `BASE_URL=http://[::1]:...` fails in setup with exit 107, because the sidecar listens on 127.0.0.1 only (L3).
+- A loopback `BASE_URL` on a port other than 58080 or 59000 has no route on the compose network, and the result
+  would still say `compose-network`.
+
+Not verified after E2:
+
+- `pauseWatch.stop()` below `await deployDone` under a real pause in that window (read from the code only).
+- S5 `drained` on a real partial failure (a fake all-failed run only).
+- A real clamshell sleep with the current watcher.
+- Who holds the 5-tuple in Docker Desktop (D99), the cause of the S6 seed PUT timeout, why the first full run's
+  worker memory was lower (2.1 and 2.7 GiB against 3.0 to 3.2 GiB), and the one 238 ms S4 maximum.
+- The full forms of S1 to S3, S6 to S8, S10 to S14 on the new route: they run once on the committed tree.
 
 ## E3. Cloudflare portable
 
@@ -78,6 +103,8 @@ Carried over from the E0 review:
 - `createAuth` should validate `clientIpHeader` at startup: an invalid header name passes startup, and then every
   `/api/auth/*` request answers 500.
 - Refuse the `.env.example` value of `BETTER_AUTH_SECRET` when `ENVIRONMENT` is not `local`.
+- Measure the longest event loop block of the worker at the smallest instance against the 60 s lock. One job per
+  process (`WORKER_CONCURRENCY=1`) lowers it, because a block no longer waits for sibling jobs (D97).
 
 ## E3a. Platform opt-in
 
@@ -100,3 +127,6 @@ every request, and names it in its README (D80). Without it the sign-in rate lim
 Each adapter owns the bucket lifecycle rule from D74. Database claims keep overlapping scheduler runs safe (D19,
 D56, D67), but `protect: true` only stops overlap inside one process, so a platform that runs two scheduler
 replicas does each run twice. Run one replica or the platform's own cron, or add a Postgres advisory lock.
+
+Each Node worker adapter measures the longest event loop block at its smallest instance against the 60 s lock. One
+job per process (`WORKER_CONCURRENCY=1`) lowers it, because a block no longer waits for sibling jobs (D97).

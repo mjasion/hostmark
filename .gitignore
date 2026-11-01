@@ -34,3 +34,6 @@ load/results/*
 
 # OS
 .DS_Store
+
+# Generated load-test fixtures (load/tools/fixtures.mjs)
+load/fixtures/

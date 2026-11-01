@@ -15,9 +15,11 @@ what differ between platforms.
 
 ## Status
 
-Stages E0 and E1 are done: the API, worker, scheduler, public pages and the React panel run locally on a Docker
-Compose stack, see [`adapters/local/README.md`](adapters/local/README.md). Nothing is deployed. The next stages
-are in the plan.
+Stages E0, E1 and E2 are done: the API, worker, scheduler, public pages and the React panel run locally on a Docker
+Compose stack, see [`adapters/local/README.md`](adapters/local/README.md), and `load/` holds the k6 and Playwright
+scenarios S1 to S15 against it (`node load/run.mjs all --short`, or `S1 S4 ...` for the full forms; see
+[`load/README.md`](load/README.md)). Load results depend on the machine and are not committed. All adapters are still
+`emulated`; nothing is deployed. The next stages are in the plan.
 
 ## Licence
 

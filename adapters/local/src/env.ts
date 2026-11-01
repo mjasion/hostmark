@@ -21,7 +21,7 @@ export const envSchema = z.object({
   HOST: z.string().default('0.0.0.0'),
   APP_VERSION: z.string().default('dev'),
   ENVIRONMENT: z.string().default('local'),
-  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(4),
+  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(1),
   /** Directory with the Vite build and prerendered pages; only the api serves it (D88). */
   WEB_DIST: z.string().default('web'),
   /** Signs session cookies (D80). No default: a missing or short value stops the process at startup. */

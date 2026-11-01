@@ -8,8 +8,10 @@
     "node": ">=22"
   },
   "scripts": {
-    "typecheck": "pnpm -r --workspace-concurrency=1 typecheck",
-    "test": "vitest run",
+    "typecheck": "pnpm -r --workspace-concurrency=1 typecheck && pnpm typecheck:load",
+    "typecheck:load": "tsc -p load/playwright --noEmit",
+    "test": "vitest run && pnpm test:load",
+    "test:load": "node --test load/test",
     "lint": "biome check .",
     "format": "biome check --write ."
   },

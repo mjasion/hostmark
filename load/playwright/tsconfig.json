@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": false,
+    "paths": { "@playwright/test": ["../../apps/web/node_modules/@playwright/test"] },
+    "typeRoots": ["../../node_modules/@types"]
+  },
+  "include": ["*.ts"]
+}

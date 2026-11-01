@@ -52,7 +52,8 @@ Process-level (validated by `src/env.ts`, which exits with a readable message on
 | `OTLP_ENDPOINT`                                                    | empty (telemetry off)                  | OTLP/HTTP base URL                                                                                                    |
 | `PORT`, `HOST`                                                     | `8080`, `0.0.0.0`                      | API listener (inside the container)                                                                                   |
 | `APP_VERSION`, `ENVIRONMENT`                                       | `dev`, `local`                         | Telemetry resource attributes                                                                                         |
-| `WORKER_CONCURRENCY`                                               | `4`                                    | Parallel jobs per worker                                                                                              |
+| `WORKER_CONCURRENCY`                                               | `1`                                    | Parallel jobs per worker process. The image codecs run on one JS thread, so more only adds memory (D97)               |
+| `WORKER_REPLICAS` (compose only)                                   | `2`                                    | Worker processes; throughput scales with them (D97)                                                                   |
 | `QUEUE_BACKOFF_SCALE`                                              | `1`                                    | Multiplies the retry delays (D66)                                                                                     |
 | `SEED_API_KEY`, `SEED_ADMIN_API_KEY`                               | required by `seed`                     | Seed keys (D14)                                                                                                       |
 | `BETTER_AUTH_SECRET`                                               | required by `api`                      | Signs session cookies, 32+ characters, no default (D80)                                                               |
@@ -74,8 +75,9 @@ OpenTelemetry Node SDK through `@hostmark/telemetry/node`.
 
 - Crash recovery takes 60 to 90 s: BullMQ waits for the lock (60 s) and the stalled check (30 s) (D65). A job that
   kills its worker five times is dead-lettered (D63, D64).
-- The worker has `mem_limit: 4g` (and no swap). Measured with 50 MP inputs at concurrency 4: 3.7 GB peak over a
-  stream of 24 jobs, no kernel kill. If the limit is hit the worker is killed and the jobs are retried (D79).
+- Each worker replica has `mem_limit: 4g` (and no swap). Measured with `WORKER_CONCURRENCY=1`: a stream of 24
+  maximum-size (49 to 50 MP) inputs peaked at 3.0 to 3.2 GiB per process, with one replica or two, no kernel kill; one
+  process at concurrency 4 peaked at 3.6 GiB. If the limit is hit the worker is killed and the jobs are retried (D79).
 - Scheduler runs may overlap (a slow run, a restart): database claims make that safe (D19), so there is no lock.
 - Producer calls give up after 5 s when Redis is down, so `complete` answers 503 instead of hanging (D63).
 - Trace link: the worker trace carries `link:traceID` of the producer. Find it in Grafana Explore (Tempo) with the

@@ -12,7 +12,7 @@ x-app-env: &app-env
   S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
   OTLP_ENDPOINT: http://lgtm:4318
   QUEUE_BACKOFF_SCALE: ${QUEUE_BACKOFF_SCALE:-1}
-  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
 
 # Every service that runs the app image carries the build. `build:` alone does not stop compose from trying to pull
 # `hostmark-local:dev` when it is missing, so `pull_policy: build` says to build instead.
@@ -155,11 +155,15 @@ services:
 
   # chaos=crash kills this process with exit code 1; the restart policy brings it back and BullMQ hands the
   # job over once its lock (60 s) has expired.
+  # The codecs run on one JS thread, so a process does one job at a time and throughput scales with the number of
+  # processes, not with WORKER_CONCURRENCY (D97). mem_limit is per replica.
   worker:
     <<: *app
     command: ["node", "--enable-source-maps", "dist/worker.js"]
     restart: unless-stopped
-    # Peak memory of one 50 MP job and of four at once: see D79. memswap_limit equals mem_limit, so the result does not
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+    # Peak memory of one process (one job at a time): see D79. memswap_limit equals mem_limit, so the result does not
     # depend on how much swap the host has. A process that reaches the limit is killed by the kernel; the jobs in
     # flight stall and are started again (D63).
     mem_limit: 4g

@@ -63,6 +63,10 @@ function compose(args: string[], extraEnv: Record<string, string> = {}): string 
   return res.stdout + res.stderr;
 }
 
+// The stack runs WORKER_REPLICAS worker processes (D97). The chaos steps kill and watch one worker, so they run
+// with a single replica and the run ends by restoring the replica count of the compose file.
+const ONE_WORKER = ['--scale', 'worker=1'];
+
 // Ctrl-C in the middle of the chaos steps must not leave the worker with the test's short backoff.
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
@@ -191,6 +195,8 @@ async function step(name: string, fn: () => Promise<string | undefined>): Promis
 let readyFileId = '';
 let completeTraceId = '';
 const userId = 'seed-user';
+
+compose(['up', '-d', '--no-deps', ...ONE_WORKER, 'worker']);
 
 await step('stack is healthy', async () => {
   const health = await user.deepHealth();
@@ -359,7 +365,7 @@ await step('JPEG with EXIF reaches ready in under 60 s with three WebP variants'
 
 await step('chaos=fail: five attempts, status failed, message in the DLQ', async () => {
   // The real backoff schedule takes 400 s; scale it down for this run and restore it afterwards.
-  compose(['up', '-d', '--force-recreate', '--no-deps', 'worker'], {
+  compose(['up', '-d', '--force-recreate', '--no-deps', ...ONE_WORKER, 'worker'], {
     QUEUE_BACKOFF_SCALE: SMOKE_BACKOFF_SCALE,
   });
   await sleep(3000);
@@ -392,7 +398,7 @@ await step('chaos=fail: five attempts, status failed, message in the DLQ', async
     );
     return `attempts ${file.attempts}, ${retried} retries, gaps ${gaps.map((g) => g.toFixed(1)).join('/')} s, one DLQ entry with the original message`;
   } finally {
-    compose(['up', '-d', '--force-recreate', '--no-deps', 'worker']);
+    compose(['up', '-d', '--force-recreate', '--no-deps', ...ONE_WORKER, 'worker']);
   }
 });
 
@@ -634,7 +640,7 @@ if (RUN_LONG) {
   });
 }
 
-// Whatever a step left behind: the worker runs with the default backoff again.
+// Whatever a step left behind: the workers run with the default backoff and replica count again.
 compose(['up', '-d', '--no-deps', 'worker']);
 await sql.end();
 await dlq.close();

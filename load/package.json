@@ -1,0 +1,6 @@
+{
+  "name": "hostmark-load",
+  "private": true,
+  "type": "module",
+  "description": "k6 and Playwright load scenarios. Not a workspace package: it has no dependencies and is run through run.mjs."
+}
