@@ -15,9 +15,9 @@ what differ between platforms.
 
 ## Status
 
-Stage E0 is done: the API, worker and scheduler run locally on a Docker Compose stack, see
-[`adapters/local/README.md`](adapters/local/README.md). There is no frontend yet and nothing is deployed. The
-next stages are in the plan.
+Stages E0 and E1 are done: the API, worker, scheduler, public pages and the React panel run locally on a Docker
+Compose stack, see [`adapters/local/README.md`](adapters/local/README.md). Nothing is deployed. The next stages
+are in the plan.
 
 ## Licence
 

@@ -22,6 +22,19 @@ export const SEED_USER_ID = 'seed-user';
 export const SEED_ADMIN_USER_ID = 'seed-admin';
 
 /**
+ * Emails of the seed users, the single source for the seed and for signup (D80). A real account holding one of
+ * them makes every later seed fail on the unique email, and adopting it would hand out admin, so signup refuses
+ * both.
+ */
+export const SEED_USER_EMAIL = 'seed@hostmark.test';
+export const SEED_ADMIN_EMAIL = 'admin@hostmark.test';
+export const RESERVED_EMAILS: readonly string[] = [SEED_USER_EMAIL, SEED_ADMIN_EMAIL];
+
+/** Case-insensitive and ignoring surrounding whitespace, the way Better Auth stores an email. */
+export const isReservedEmail = (email: string): boolean =>
+  RESERVED_EMAILS.includes(email.trim().toLowerCase());
+
+/**
  * D14: users first (`api_keys.user_id` is NOT NULL), then one regular and one admin key. A value the caller
  * provides is the only key of its seed user afterwards (rotation, D75); an unset value keeps what exists and
  * generates a key only for a user without one. The seed users have no credentials and cannot log in.
@@ -41,8 +54,8 @@ export async function seed(db: Database, options: SeedOptions = {}): Promise<See
     await tx
       .insert(user)
       .values([
-        { id: SEED_USER_ID, name: 'Seed user', email: 'seed@hostmark.test' },
-        { id: SEED_ADMIN_USER_ID, name: 'Seed admin', email: 'admin@hostmark.test' },
+        { id: SEED_USER_ID, name: 'Seed user', email: SEED_USER_EMAIL },
+        { id: SEED_ADMIN_USER_ID, name: 'Seed admin', email: SEED_ADMIN_EMAIL },
       ])
       .onConflictDoNothing();
 

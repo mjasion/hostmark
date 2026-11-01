@@ -32,5 +32,8 @@ Reference application for benchmarking hosting platforms. Read `docs/spec.md` fo
 - Tests that need Postgres skip unless `DATABASE_URL` is set. Start a throwaway container bound to `127.0.0.1`.
 - Port 8080 is in use. Do not touch containers you did not start.
 - k6 is not installed on the host; run it from the `grafana/k6` image.
+- Chromium does not launch on the host (`bootstrap_check_in ... Permission denied`). Run Playwright in
+  `mcr.microsoft.com/playwright:v1.64.1-noble` with `apps/web/e2e/forward.mjs`; the command is in
+  `adapters/local/README.md`.
 - Git commits are signed through 1Password. `failed to fill whole buffer` means signing is blocked: ask the owner
   to unblock it, then retry. Never bypass signing.

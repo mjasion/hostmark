@@ -25,6 +25,11 @@ x-app: &app
     args:
       # Becomes service.version and the x-version header; try APP_VERSION=$(git rev-parse --short HEAD).
       APP_VERSION: ${APP_VERSION:-local}
+      # RUM attributes of the web build (D85); closed lists in packages/contract.
+      HOSTMARK_PLATFORM: ${HOSTMARK_PLATFORM:-local}
+      HOSTMARK_VARIANT: ${HOSTMARK_VARIANT:-portable}
+      HOSTMARK_TOPOLOGY: ${HOSTMARK_TOPOLOGY:-single}
+      HOSTMARK_REGION: ${HOSTMARK_REGION:-local}
   environment: *app-env
 
 services:
@@ -121,6 +126,13 @@ services:
     environment:
       <<: *app-env
       PORT: "8080"
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?copy .env.example to .env}
+      PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:58080}
+      AUTH_TRUSTED_ORIGINS: ${AUTH_TRUSTED_ORIGINS:-}
+      AUTH_CLIENT_IP_HEADER: ${AUTH_CLIENT_IP_HEADER:-}
+      AUTH_SIGNUP_ENABLED: ${AUTH_SIGNUP_ENABLED:-true}
+      HOSTMARK_TOPOLOGY: ${HOSTMARK_TOPOLOGY:-single}
+      HOSTMARK_REGION: ${HOSTMARK_REGION:-local}
     ports:
       - 127.0.0.1:58080:8080
     restart: unless-stopped

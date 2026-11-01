@@ -6,6 +6,14 @@ export interface AppConfig {
   platform: string;
   /** `x-version` header, the commit SHA. */
   version: string;
+  /**
+   * Public origin of the app, e.g. `https://hostmark.example` (the same value as the auth base URL). Absolute
+   * URLs in `/f/:id` come from it, which is what makes that page safe to cache (D82). Without it the page is
+   * rendered from the request's host and sent `no-store`.
+   */
+  publicUrl?: string;
+  /** Overrides for the RUM attributes of rendered pages (D80); each defaults from `platform`. Closed lists. */
+  rum?: Partial<{ platform: string; variant: string; topology: string; region: string }>;
 }
 
 /** Cookie sessions. Configured by the adapter (stage E1); Bearer keys work without it. */

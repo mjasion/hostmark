@@ -2,15 +2,33 @@ import { describe, expect, it } from 'vitest';
 import {
   BACKOFF_SECONDS,
   CreateUploadRequest,
+  CreateUploadResponse,
+  DailyStat,
   DebugCpuQuery,
+  DeepHealth,
+  FILE_STATUSES,
+  FileIdParam,
+  FileResponse,
+  FileStatusEvent,
+  Health,
   JobMessage,
   ListFilesQuery,
+  ListFilesResponse,
   MAX_ATTEMPTS,
   MAX_UPLOAD_BYTES,
   originalKey,
   Problem,
+  RUM_METRIC_NAMES,
+  RUM_PLATFORMS,
+  RUM_RATINGS,
+  RUM_REGIONS,
+  RUM_TOPOLOGIES,
+  RUM_VARIANTS,
   RumRequest,
+  StatsResponse,
+  TERMINAL_STATUSES,
   UpdateFileRequest,
+  VARIANT_SIZES,
   variantKey,
 } from '../src';
 
@@ -131,5 +149,207 @@ describe('Problem', () => {
 
   it('rejects non-error statuses', () => {
     expect(Problem.safeParse({ type: 't', title: 't', status: 200 }).success).toBe(false);
+  });
+});
+
+const iso = '2026-10-31T12:00:00.000Z';
+const file = {
+  id: uuid,
+  status: 'ready',
+  contentType: 'image/png',
+  bytes: 10,
+  width: 2,
+  height: 1,
+  sha256: 'abc',
+  isPublic: false,
+  attempts: 1,
+  lastError: null,
+  createdAt: iso,
+  queuedAt: iso,
+  readyAt: iso,
+  expiresAt: iso,
+  variants: [{ size: 128, url: 'https://s/x', bytes: 5 }],
+};
+
+describe('FileResponse', () => {
+  it('parses a ready file and a pending one with nulls', () => {
+    expect(FileResponse.parse(file)).toEqual(file);
+    const pending = {
+      ...file,
+      status: 'pending_upload',
+      bytes: null,
+      width: null,
+      height: null,
+      sha256: null,
+      queuedAt: null,
+      readyAt: null,
+      variants: [],
+    };
+    expect(FileResponse.parse(pending)).toEqual(pending);
+  });
+
+  it.each([
+    ['unknown status', { status: 'done' }],
+    ['non-uuid id', { id: '123' }],
+    ['local time without offset', { createdAt: '2026-10-31T12:00:00' }],
+    ['fractional attempts', { attempts: 1.5 }],
+    ['unknown variant size', { variants: [{ size: 256, url: 'u', bytes: 1 }] }],
+    ['negative variant bytes', { variants: [{ size: 128, url: 'u', bytes: -1 }] }],
+    ['missing nullable field', { lastError: undefined }],
+    ['missing expiresAt', { expiresAt: undefined }],
+  ])('rejects %s', (_name, patch) => {
+    expect(FileResponse.safeParse({ ...file, ...patch }).success).toBe(false);
+  });
+
+  it('accepts every variant size the contract defines', () => {
+    const variants = VARIANT_SIZES.map((size) => ({ size, url: 'u', bytes: 1 }));
+    expect(FileResponse.safeParse({ ...file, variants }).success).toBe(true);
+  });
+});
+
+describe('list, status event, stats and health bodies', () => {
+  it('requires nextCursor to be present, null or a string', () => {
+    expect(ListFilesResponse.safeParse({ items: [file], nextCursor: null }).success).toBe(true);
+    expect(ListFilesResponse.safeParse({ items: [file], nextCursor: uuid }).success).toBe(true);
+    expect(ListFilesResponse.safeParse({ items: [file] }).success).toBe(false);
+    expect(ListFilesResponse.safeParse({ items: [{ ...file, id: 'x' }], nextCursor: null }).success).toBe(
+      false,
+    );
+  });
+
+  it('parses the SSE status event and rejects an unknown status', () => {
+    const ev = { id: uuid, status: 'processing', width: null, height: null, lastError: null };
+    expect(FileStatusEvent.parse(ev)).toEqual(ev);
+    expect(FileStatusEvent.safeParse({ ...ev, status: 'weird' }).success).toBe(false);
+  });
+
+  it('validates the day format of a daily stat', () => {
+    const stat = {
+      day: '2026-10-31',
+      platform: 'local',
+      uploads: 1,
+      ready: 1,
+      failed: 0,
+      bytesIn: 10,
+      p50ProcessingMs: null,
+      p95ProcessingMs: 5,
+    };
+    expect(StatsResponse.parse({ items: [stat] }).items).toHaveLength(1);
+    for (const day of ['2026-10-31T00:00:00Z', '31-10-2026', '2026-1-1', '']) {
+      expect(DailyStat.safeParse({ ...stat, day }).success).toBe(false);
+    }
+  });
+
+  it('knows the shape of health and deep health', () => {
+    expect(Health.safeParse({ status: 'ok' }).success).toBe(true);
+    expect(Health.safeParse({ status: 'down' }).success).toBe(false);
+    const checks = {
+      database: { status: 'ok', latencyMs: 2 },
+      storage: { status: 'unknown' },
+      queue: { status: 'down', error: 'x' },
+    };
+    expect(DeepHealth.safeParse({ status: 'down', checks }).success).toBe(true);
+    expect(DeepHealth.safeParse({ status: 'unknown', checks }).success).toBe(false);
+    expect(
+      DeepHealth.safeParse({ status: 'ok', checks: { ...checks, queue: { status: 'ok', latencyMs: -1 } } })
+        .success,
+    ).toBe(false);
+    expect(DeepHealth.safeParse({ status: 'ok', checks: { database: checks.database } }).success).toBe(false);
+  });
+
+  it('parses an upload response and a path id', () => {
+    const res = {
+      fileId: uuid,
+      uploadUrl: 'https://s/x',
+      uploadHeaders: { 'content-type': 'image/png' },
+      expiresAt: iso,
+    };
+    expect(CreateUploadResponse.parse(res)).toEqual(res);
+    expect(CreateUploadResponse.safeParse({ ...res, uploadHeaders: { a: 1 } }).success).toBe(false);
+    expect(FileIdParam.safeParse({ id: uuid }).success).toBe(true);
+    expect(FileIdParam.safeParse({ id: '../etc/passwd' }).success).toBe(false);
+  });
+});
+
+describe('query bounds', () => {
+  it('limits the cursor length', () => {
+    expect(ListFilesQuery.safeParse({ cursor: 'a'.repeat(128) }).success).toBe(true);
+    expect(ListFilesQuery.safeParse({ cursor: 'a'.repeat(129) }).success).toBe(false);
+    expect(ListFilesQuery.safeParse({ cursor: '' }).success).toBe(false);
+  });
+
+  it.each(['1', '100'])('accepts limit=%s at the edge', (limit) => {
+    expect(ListFilesQuery.parse({ limit }).limit).toBe(Number(limit));
+  });
+
+  it('accepts a very large declared size (answered with 413) but never a non-number', () => {
+    expect(CreateUploadRequest.safeParse({ contentType: 'image/png', bytes: 2 ** 60 }).success).toBe(true);
+    expect(
+      CreateUploadRequest.safeParse({ contentType: 'image/png', bytes: Number.POSITIVE_INFINITY }).success,
+    ).toBe(false);
+    expect(CreateUploadRequest.safeParse({ contentType: 'image/png', bytes: null }).success).toBe(false);
+    expect(CreateUploadRequest.safeParse({ contentType: 'image/png' }).success).toBe(false);
+  });
+});
+
+describe('RUM closed lists', () => {
+  const ok = {
+    name: 'LCP',
+    value: 1,
+    platform: 'aws',
+    variant: 'portable',
+    topology: 'single',
+    region: 'local',
+  };
+
+  it.each([
+    ['name', RUM_METRIC_NAMES],
+    ['platform', RUM_PLATFORMS],
+    ['variant', RUM_VARIANTS],
+    ['topology', RUM_TOPOLOGIES],
+    ['region', RUM_REGIONS],
+  ] as const)('accepts every %s of the list and nothing outside it', (key, list) => {
+    for (const value of list) expect(RumRequest.safeParse({ ...ok, [key]: value }).success).toBe(true);
+    expect(RumRequest.safeParse({ ...ok, [key]: `${list[0]}-x` }).success).toBe(false);
+    const flipped = list[0].toLowerCase() === list[0] ? list[0].toUpperCase() : list[0].toLowerCase();
+    expect(RumRequest.safeParse({ ...ok, [key]: flipped }).success).toBe(false);
+  });
+
+  it('accepts every rating and rejects others, and rejects missing required fields', () => {
+    for (const rating of RUM_RATINGS) expect(RumRequest.safeParse({ ...ok, rating }).success).toBe(true);
+    expect(RumRequest.safeParse({ ...ok, rating: 'great' }).success).toBe(false);
+    for (const key of ['name', 'value', 'platform', 'variant', 'topology'] as const) {
+      const { [key]: _omitted, ...rest } = ok;
+      expect(RumRequest.safeParse(rest).success).toBe(false);
+    }
+  });
+
+  it('bounds the value', () => {
+    expect(RumRequest.safeParse({ ...ok, value: 10_000_000 }).success).toBe(true);
+    expect(RumRequest.safeParse({ ...ok, value: 10_000_001 }).success).toBe(false);
+    expect(RumRequest.safeParse({ ...ok, value: Number.NaN }).success).toBe(false);
+  });
+});
+
+describe('constants', () => {
+  it('keeps the variant sizes ascending and the terminal statuses a subset of the statuses', () => {
+    expect([...VARIANT_SIZES]).toEqual([...VARIANT_SIZES].sort((a, b) => a - b));
+    for (const s of TERMINAL_STATUSES) expect(FILE_STATUSES).toContain(s);
+    expect(new Set(FILE_STATUSES).size).toBe(FILE_STATUSES.length);
+  });
+});
+
+describe('Problem members', () => {
+  it('accepts validation errors and rejects malformed ones', () => {
+    const p = {
+      type: 'about:blank',
+      title: 'Bad Request',
+      status: 400,
+      errors: [{ path: 'json.bytes', message: 'Invalid' }],
+    };
+    expect(Problem.parse(p)).toEqual(p);
+    expect(Problem.safeParse({ ...p, errors: [{ path: 'x' }] }).success).toBe(false);
+    expect(Problem.safeParse({ ...p, status: 600 }).success).toBe(false);
+    expect(Problem.safeParse({ ...p, status: 399 }).success).toBe(false);
   });
 });

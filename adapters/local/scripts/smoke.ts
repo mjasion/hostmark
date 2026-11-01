@@ -198,6 +198,103 @@ await step('stack is healthy', async () => {
   return JSON.stringify(Object.fromEntries(Object.entries(health.checks).map(([k, v]) => [k, v.status])));
 });
 
+// Web: static files, cookie sessions and the public page (E1). Shares nothing with the Bearer steps below.
+const cacheControl = async (path: string, method = 'GET') => {
+  const res = await fetch(`${API_URL}${path}`, { method });
+  return { status: res.status, cache: res.headers.get('cache-control'), body: await res.text() };
+};
+
+await step('landing and pricing are prerendered with a short cache', async () => {
+  for (const path of ['/', '/pricing']) {
+    const res = await cacheControl(path);
+    assert(res.status === 200, `${path} answered ${res.status}`);
+    assert(res.cache === 'public, max-age=300', `${path} cache-control is ${res.cache}`);
+    assert(res.body.includes('data-rum'), `${path} has no RUM tag`);
+  }
+  const head = await cacheControl('/', 'HEAD');
+  assert(head.status === 200 && head.body === '', 'HEAD / has a body or is not 200');
+  return 'GET / and /pricing public, max-age=300';
+});
+
+await step('/app rewrites to the shell and assets are immutable', async () => {
+  const shell = await cacheControl('/app/files/abc');
+  assert(shell.status === 200 && shell.body.includes('id="root"'), 'deep link is not the shell');
+  assert((await cacheControl('/login')).body === shell.body, '/login is not the same shell');
+  const asset = /\/assets\/[^"]+\.js/.exec(shell.body)?.[0];
+  assert(asset, 'shell references no hashed script');
+  const js = await cacheControl(asset);
+  assert(js.cache === 'public, max-age=31536000, immutable', `asset cache-control is ${js.cache}`);
+  const api404 = await fetch(`${API_URL}/api/nope`);
+  assert(
+    api404.status === 404 && api404.headers.get('content-type')?.includes('problem+json'),
+    '/api/* was shadowed',
+  );
+  return `${asset} immutable, /api/nope still a JSON 404`;
+});
+
+await step('sign up, log in, upload and publish with a session cookie, public page has OG tags', async () => {
+  const email = `smoke-${Date.now()}@users.test`;
+  const password = 'smoke-password-1234';
+  const auth = (path: string, body: object) =>
+    fetch(`${API_URL}/api/auth/${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: API_URL },
+      body: JSON.stringify(body),
+    });
+  const signup = await auth('sign-up/email', { email, password, name: 'Smoke' });
+  assert(signup.status === 200, `sign-up answered ${signup.status}`);
+  const login = await auth('sign-in/email', { email, password });
+  assert(login.status === 200, `sign-in answered ${login.status}`);
+  const setCookie = login.headers.getSetCookie().join('; ');
+  assert(/HttpOnly/i.test(setCookie) && /SameSite=Lax/i.test(setCookie), `cookie attributes: ${setCookie}`);
+  const cookie = login.headers
+    .getSetCookie()
+    .map((c) => c.split(';')[0])
+    .join('; ');
+  const sessionFetch: typeof fetch = (input, init) =>
+    fetch(input, { ...init, headers: { ...init?.headers, cookie, origin: API_URL } });
+  const browser = createClient({ baseUrl: API_URL, fetch: sessionFetch });
+  const anonymous = await fetch(`${API_URL}/api/files`);
+  assert(anonymous.status === 401, `anonymous list answered ${anonymous.status}`);
+
+  const id = await upload(browser, await makeJpeg(800, 600, 1));
+  await browser.completeUpload(id);
+  const ready = await waitFor(browser, id, (f) => f.status === 'ready' || f.status === 'failed', 60_000);
+  assert(ready.status === 'ready', `file ended as ${ready.status}`);
+  await browser.updateFile(id, { isPublic: true });
+  const page = await cacheControl(`/f/${id}`);
+  assert(page.status === 200, `/f/${id} answered ${page.status}`);
+  assert(page.cache?.includes('s-maxage=60'), `/f cache-control is ${page.cache}`);
+  for (const tag of ['og:title', 'og:image', 'og:url'])
+    assert(page.body.includes(`property="${tag}"`), `missing ${tag}`);
+  assert(page.body.includes(`${API_URL}/media/`), 'og:image is not an absolute media URL');
+  await browser.updateFile(id, { isPublic: false });
+  const gone = await cacheControl(`/f/${id}`);
+  assert(gone.status === 404 && gone.cache === 'no-store', `unpublished page: ${gone.status} ${gone.cache}`);
+  await browser.deleteFile(id);
+  return `${email} -> ready -> /f/${id} 200 -> 404 after unpublish`;
+});
+
+await step('/rum.js is served and POST /api/rum accepts a beacon', async () => {
+  const js = await cacheControl('/rum.js');
+  assert(js.status === 200 && js.cache === 'public, max-age=300', `rum.js: ${js.status} ${js.cache}`);
+  const res = await fetch(`${API_URL}/api/rum`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: 'LCP',
+      value: 1234,
+      rating: 'good',
+      platform: 'local',
+      variant: 'portable',
+      topology: 'single',
+      region: 'local',
+    }),
+  });
+  assert(res.status >= 200 && res.status < 300, `POST /api/rum answered ${res.status}`);
+  return `POST /api/rum -> ${res.status}`;
+});
+
 await step('JPEG with EXIF reaches ready in under 60 s with three WebP variants', async () => {
   // 3000x2000 tagged orientation 6: upright it is 2000x3000.
   const jpeg = await makeJpeg(3000, 2000, 6);

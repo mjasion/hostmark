@@ -1,0 +1,22 @@
+{
+  "name": "@hostmark/pages",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "exports": {
+    ".": "./src/index.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "prerender": "node --import tsx scripts/prerender.ts"
+  },
+  "dependencies": {
+    "hono": "4.13.14"
+  },
+  "devDependencies": {
+    "@hostmark/contract": "workspace:*",
+    "tsx": "4.23.15"
+  }
+}

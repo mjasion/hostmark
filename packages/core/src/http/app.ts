@@ -21,6 +21,7 @@ import {
   variantKey,
 } from '@hostmark/contract';
 import { dailyStats, files } from '@hostmark/db';
+import { renderError, renderNotFound, renderPublicFile } from '@hostmark/pages';
 import { contextFromTraceparent, currentTraceId, injectTraceContext, withSpan } from '@hostmark/telemetry';
 import { context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 import { and, desc, eq, isNull, lt, sql } from 'drizzle-orm';
@@ -46,6 +47,7 @@ import { burnCpu } from './cpu';
 import { type FileRow, toFileResponses, toStatusEvent } from './files';
 import { probe } from './health';
 import { problemResponse, randomTraceId } from './problem';
+import { htmlResponse, PUBLIC_PAGE_CACHE, pageModel, pageOrigin, rumAttributes } from './public';
 
 export interface AppOptions {
   /** Per dependency probe of `/api/health/deep`. */
@@ -54,6 +56,7 @@ export interface AppOptions {
 
 const DAY_MS = 86_400_000;
 const AUTH_ROUTE = '/api/auth/*';
+const AUTH_MAX_BODY_BYTES = 64 * 1024;
 const TERMINAL = new Set(['ready', 'failed', 'deleted']);
 const MEDIA_FILE = /^(\d+)\.webp$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -135,7 +138,8 @@ export function createApp(
       const res = problemResponse(c, 500, 'Internal Server Error', 'An unexpected error occurred');
       for (const [k, v] of Object.entries(knownHeaders)) res.headers.set(k, v);
       if (c.req.path.startsWith('/api/')) res.headers.set('cache-control', 'private, no-store');
-      else if (c.req.path.startsWith('/media/')) res.headers.set('cache-control', 'no-store');
+      else if (c.req.path.startsWith('/media/') || c.req.path.startsWith('/f/'))
+        res.headers.set('cache-control', 'no-store');
       c.res = res;
       return;
     }
@@ -178,7 +182,8 @@ export function createApp(
           };
           if (c.req.path.startsWith('/api/')) headers['cache-control'] = 'private, no-store';
           // A CDN default could otherwise cache the 404 of a file that is about to become public.
-          else if (c.req.path.startsWith('/media/') && status !== 200) headers['cache-control'] = 'no-store';
+          else if ((c.req.path.startsWith('/media/') || c.req.path.startsWith('/f/')) && status !== 200)
+            headers['cache-control'] = 'no-store';
           withHeaders(c, headers);
         },
         { kind: SpanKind.SERVER },
@@ -187,7 +192,20 @@ export function createApp(
   };
   app.use('*', observe);
 
+  // HTML for the public pages, JSON problems everywhere else.
+  const isPage = (c: Context<HttpEnv>) => c.req.path.startsWith('/f/');
+  const pageError = (status: number, html: string) => htmlResponse(status, html, 'no-store');
+
   app.onError((err, c) => {
+    if (isPage(c) && !(err instanceof DomainError) && !(err instanceof HTTPException && err.status < 500)) {
+      c.get('deps')?.telemetry.logger.error('unhandled error', {
+        error: err,
+        method: c.req.method,
+        route: matchedRoute(c),
+      });
+      const deps = c.get('deps');
+      return pageError(500, renderError(rumAttributes(deps.config)));
+    }
     if (err instanceof DomainError) return problemResponse(c, err.status, err.title, err.detail);
     if (err instanceof HTTPException) {
       const client = err.status < 500;
@@ -201,7 +219,11 @@ export function createApp(
     });
     return problemResponse(c, 500, 'Internal Server Error', 'An unexpected error occurred');
   });
-  app.notFound((c) => problemResponse(c, 404, 'Not Found', 'No such route'));
+  app.notFound((c) =>
+    isPage(c)
+      ? pageError(404, renderNotFound(rumAttributes(c.get('deps').config)))
+      : problemResponse(c, 404, 'Not Found', 'No such route'),
+  );
 
   for (const path of [
     '/api/uploads',
@@ -501,7 +523,15 @@ export function createApp(
     return c.body(null, 204);
   });
 
-  // Auth is configured per adapter (E1); without it only Bearer keys work.
+  // Auth is configured per adapter (E1); without it only Bearer keys work. D80: sign-up is anonymous, so the body is
+  // capped like /api/rum; the largest legitimate body is a name, an email and a password.
+  app.use(
+    AUTH_ROUTE,
+    bodyLimit({
+      maxSize: AUTH_MAX_BODY_BYTES,
+      onError: (c) => problemResponse(c as Context<HttpEnv>, 413, 'Payload Too Large', 'Body too large'),
+    }),
+  );
   app.all(AUTH_ROUTE, (c) => {
     const { auth } = c.get('deps');
     if (!auth) throw new NotFoundError('Session authentication is not configured');
@@ -540,6 +570,39 @@ export function createApp(
         'cache-control': 'public, max-age=31536000, immutable',
       },
     });
+  });
+
+  // D6, D21, D82: public share page, rendered here so the CDN can cache it for a minute.
+  app.get('/f/:id', async (c) => {
+    const { db, config, telemetry } = c.get('deps');
+    const rum = rumAttributes(config);
+    const id = c.req.param('id');
+    if (!UUID.test(id)) return pageError(404, renderNotFound(rum));
+    const [row] = await withSpan(telemetry.tracer, 'db.select_public_file', () =>
+      db
+        .select({
+          id: files.id,
+          width: files.width,
+          height: files.height,
+          contentType: files.contentType,
+          bytes: files.bytes,
+          createdAt: files.createdAt,
+        })
+        .from(files)
+        .where(
+          and(eq(files.id, id), eq(files.status, 'ready'), eq(files.isPublic, true), isNull(files.deletedAt)),
+        )
+        .limit(1),
+    );
+    if (!row) return pageError(404, renderNotFound(rum));
+    trace.getActiveSpan()?.setAttribute('file.id', row.id);
+    const { origin, cacheable } = pageOrigin(c, config);
+    const { file, urls } = pageModel(row, origin);
+    return htmlResponse(
+      200,
+      renderPublicFile(file, urls, rum),
+      cacheable ? PUBLIC_PAGE_CACHE : 'private, no-store',
+    );
   });
 
   return app;

@@ -22,6 +22,9 @@ await build({
   format: 'esm',
   sourcemap: true,
   external: jsquash,
+  // packages/pages renders with Hono JSX.
+  jsx: 'automatic',
+  jsxImportSource: 'hono/jsx',
   // CommonJS dependencies (OpenTelemetry, ioredis) call require() on Node built-ins.
   banner: {
     js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);",

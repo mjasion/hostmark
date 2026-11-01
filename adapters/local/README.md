@@ -26,31 +26,43 @@ then `api`, `worker` and `scheduler`. Stop and wipe with `docker compose down -v
 | Redis                   | 127.0.0.1:56379          |
 | MinIO                   | http://127.0.0.1:59000   |
 
-Static web assets (`apps/web/dist`) are not served yet; that arrives with E1.
+The api also serves the web app (`apps/web/dist`, built into the image at `/app/web`): `/` and `/pricing` are
+prerendered, `/login`, `/signup` and `/app/*` are the single page app, `/assets/*` is immutable and `/rum.js` is cached
+for 5 minutes (D88). Nothing is compressed. Sign up at http://127.0.0.1:58080/signup.
 
 ## Environment variables
 
 Compose-level (`.env`): `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `MINIO_ROOT_USER`,
 `MINIO_ROOT_PASSWORD`, `S3_BUCKET`, `SEED_API_KEY`, `SEED_ADMIN_API_KEY`, `QUEUE_BACKOFF_SCALE`,
-`WORKER_CONCURRENCY`, `APP_VERSION`. Nothing in `.env.example` is a secret.
+`WORKER_CONCURRENCY`, `APP_VERSION`, `BETTER_AUTH_SECRET`, `PUBLIC_URL`, `AUTH_SIGNUP_ENABLED` (also
+`AUTH_TRUSTED_ORIGINS`, `AUTH_CLIENT_IP_HEADER`, `HOSTMARK_PLATFORM`, `HOSTMARK_VARIANT`, `HOSTMARK_TOPOLOGY`, `HOSTMARK_REGION`, all optional).
+Nothing in `.env.example` is a secret.
 
 Process-level (validated by `src/env.ts`, which exits with a readable message on error):
 
-| Variable                                   | Default               | Meaning                                                      |
-| ------------------------------------------ | --------------------- | ------------------------------------------------------------ |
-| `DATABASE_URL`                             | required              | Postgres connection string                                   |
-| `REDIS_URL`                                | required              | BullMQ connection                                            |
-| `S3_ENDPOINT`                              | required              | S3 endpoint used by the services                             |
-| `S3_PUBLIC_ENDPOINT`                       | `S3_ENDPOINT`         | Host used in presigned URLs, must be reachable by the client |
-| `S3_BUCKET`                                | required              | Bucket name                                                  |
-| `S3_REGION`                                | `us-east-1`           | Signing region                                               |
-| `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | required              | S3 credentials                                               |
-| `OTLP_ENDPOINT`                            | empty (telemetry off) | OTLP/HTTP base URL                                           |
-| `PORT`, `HOST`                             | `8080`, `0.0.0.0`     | API listener (inside the container)                          |
-| `APP_VERSION`, `ENVIRONMENT`               | `dev`, `local`        | Telemetry resource attributes                                |
-| `WORKER_CONCURRENCY`                       | `4`                   | Parallel jobs per worker                                     |
-| `QUEUE_BACKOFF_SCALE`                      | `1`                   | Multiplies the retry delays (D66)                            |
-| `SEED_API_KEY`, `SEED_ADMIN_API_KEY`       | required by `seed`    | Seed keys (D14)                                              |
+| Variable                                                           | Default                                | Meaning                                                                                                               |
+| ------------------------------------------------------------------ | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                                     | required                               | Postgres connection string                                                                                            |
+| `REDIS_URL`                                                        | required                               | BullMQ connection                                                                                                     |
+| `S3_ENDPOINT`                                                      | required                               | S3 endpoint used by the services                                                                                      |
+| `S3_PUBLIC_ENDPOINT`                                               | `S3_ENDPOINT`                          | Host used in presigned URLs, must be reachable by the client                                                          |
+| `S3_BUCKET`                                                        | required                               | Bucket name                                                                                                           |
+| `S3_REGION`                                                        | `us-east-1`                            | Signing region                                                                                                        |
+| `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`                         | required                               | S3 credentials                                                                                                        |
+| `OTLP_ENDPOINT`                                                    | empty (telemetry off)                  | OTLP/HTTP base URL                                                                                                    |
+| `PORT`, `HOST`                                                     | `8080`, `0.0.0.0`                      | API listener (inside the container)                                                                                   |
+| `APP_VERSION`, `ENVIRONMENT`                                       | `dev`, `local`                         | Telemetry resource attributes                                                                                         |
+| `WORKER_CONCURRENCY`                                               | `4`                                    | Parallel jobs per worker                                                                                              |
+| `QUEUE_BACKOFF_SCALE`                                              | `1`                                    | Multiplies the retry delays (D66)                                                                                     |
+| `SEED_API_KEY`, `SEED_ADMIN_API_KEY`                               | required by `seed`                     | Seed keys (D14)                                                                                                       |
+| `BETTER_AUTH_SECRET`                                               | required by `api`                      | Signs session cookies, 32+ characters, no default (D80)                                                               |
+| `PUBLIC_URL`                                                       | required by `api`                      | Origin the browser uses: auth base URL and `/f/:id` links                                                             |
+| `AUTH_TRUSTED_ORIGINS`                                             | empty                                  | Extra origins that pass Better Auth's origin check (`/api/auth/*`); cookie `POST /api/uploads` from them is still 403 |
+| `AUTH_CLIENT_IP_HEADER`                                            | unset (no limiter)                     | See below                                                                                                             |
+| `AUTH_SIGNUP_ENABLED`                                              | `true`                                 | `false` refuses registration                                                                                          |
+| `HOSTMARK_TOPOLOGY`, `HOSTMARK_REGION`                             | `single`, `local`                      | RUM attributes of `/f/:id` (closed lists); platform and variant come from the platform key                            |
+| `WEB_DIST`                                                         | `web`                                  | Directory the api serves                                                                                              |
+| build args `HOSTMARK_PLATFORM`, `_VARIANT`, `_TOPOLOGY`, `_REGION` | `local`, `portable`, `single`, `local` | Baked into the prerendered pages and the SPA shell (D85)                                                              |
 
 ## Platform-specific APIs used
 
@@ -95,13 +107,38 @@ you changed them. `stall.test.ts` (needs `REDIS_TEST_URL`) runs a child consumer
 until the job fails after five starts, once with a stalled start counted as an attempt; both expect one DLQ copy.
 `redis-down.test.ts` puts a TCP proxy in front of Redis.
 
+### Sign-in rate limit
+
+`AUTH_CLIENT_IP_HEADER` names the header that holds the client address. Unset, as in compose and `.env.example`, Better
+Auth's rate limiter is off (its default key, `x-forwarded-for`, can be forged and is shared when absent, D80). Set, the
+limiter is on (3 sign-ins per 10 s per address) and any `/api/auth/*` request without exactly one valid address in that
+header is answered 400. Name only a header that a proxy in front of the api overwrites; a header the client can send
+itself gives no protection. `PUBLIC_URL` must be an http or https URL; only its origin is used.
+
+## Browser test (Playwright)
+
+`apps/web/e2e` drives a real browser against the running stack: sign up, upload with the file input, live status,
+thumbnail, publish, public page and OG tags signed out, unpublish, redirect, refused signup, polling fallback and
+a Web Vitals beacon (D89). With the stack up (`docker compose up -d --wait`), from the repository root:
+
+```sh
+docker run --rm --ipc=host -v "$PWD":/repo:ro -w /repo/apps/web mcr.microsoft.com/playwright:v1.64.1-noble \
+  sh -c 'node e2e/forward.mjs & sleep 1; node node_modules/@playwright/test/cli.js test --output /tmp/pw-results'
+```
+
+The forward makes `127.0.0.1:58080` and `:59000` inside the container reach the host, which the presigned URLs
+need. Where Chromium launches on the host, `PLAYWRIGHT_BROWSERS_PATH=... pnpm --filter @hostmark/web e2e` works too
+(after `playwright install chromium`).
+
 ## Smoke test
 
 ```sh
 pnpm --filter @hostmark/adapter-local smoke
 ```
 
-It reads `.env`, drives the stack through the typed client and checks: EXIF JPEG to `ready` with three WebP variants,
+It reads `.env`, drives the stack through the typed client and checks: static pages and their `Cache-Control`, the
+`/app` rewrite, signup and login with a cookie followed by an upload, publish and `/f/:id` with OG tags, `/rum.js` and
+`POST /api/rum`, EXIF JPEG to `ready` with three WebP variants,
 `chaos=fail` (5 attempts, DLQ), `chaos=crash` (container restart, recovery), invalid bytes (1 attempt), non-admin
 `x-chaos` (403), `/media` headers and unpublish, trace link in Tempo, and the scheduler jobs on backdated rows. It
 also covers: image orientation by corner pixels, retry gaps, DLQ payloads, a double worker kill (stall twice, still

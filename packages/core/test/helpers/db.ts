@@ -39,7 +39,7 @@ export async function resetAndSeed(db: Database): Promise<{ apiKeyIds: Record<ke
     (Object.keys(USERS) as (keyof typeof USERS)[]).map((k) => ({
       id: USERS[k],
       name: k,
-      email: `${k}@hostmark.test`,
+      email: `${k}@users.test`,
     })),
   );
   const ids = {} as Record<keyof typeof KEYS, string>;

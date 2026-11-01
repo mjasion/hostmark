@@ -25,12 +25,30 @@ Carried over from the E0 review:
   later seed fail, and the seed must not adopt such an account, because that would hand out admin.
 - `packages/contract` gets tests for the client and for schema edge cases.
 
+Known gaps after E1:
+
+- The event stream outlives sign-out by up to 60 s.
+- Cancel during `complete` does nothing.
+- `/app/files/not-a-uuid` shows raw text, and the friendly branch in `apps/web/src/auth.ts` is unreachable.
+- "Retry" is offered on refused files.
+- A lazy thumbnail first scrolled to after the presigned URL has expired is unproven.
+- Generic 404s carry no `Cache-Control`.
+- `/app/files/..%2f..%2fetc` shows a raw JSON 404 in the browser.
+- The `.origin` and `AUTH_CLIENT_IP_HEADER` wiring in `adapters/local/src/runtime.ts` has no test of its own.
+- A `complete` left running by a signed-out user can answer 401 after the next user signed in, which sends that
+  user to `/login`. No data is shown and signing in again recovers.
+- The test that upload errors other than a 401 keep the session covers a failed create only.
+
 ## E2. Load tests
 
 `load/` with k6 scenarios S1 to S15 and Playwright S10 and S13, writing JSON to `load/results/`.
 
 Done when every scenario runs against the local variant. S7, S12, S14 and S15 can only be partly meaningful
 locally; that is recorded per scenario rather than hidden.
+
+Sign-in cannot be a k6 load path if the limiter is on (3 per 10 s per address, D80); use Bearer keys or sessions
+created in setup. `pending_upload` rows of cancelled uploads are hidden from the gallery and remain until cleanup,
+so counts of rows and `daily_stats` include them.
 
 Results must account for three behaviours found in the E0 review: the worker memory limit under a sustained
 stream of maximum-size images (D79), `files.attempts` over-counting after an abandoned send, and a repeat killer
@@ -52,6 +70,14 @@ Carried over from the E0 review:
 - The Workers image loader imports the wasm modules statically, as `@hostmark/image` documents.
 - A distributed bundle has no `node_modules`, so it must carry the Apache-2.0 and BSD-3-Clause texts of the
   codecs itself.
+- `/media` is cached for a year as immutable, so unpublish and delete need a CDN purge (D6). This is the first
+  stage with a CDN. Design it so that the other adapters can do the same, and do not leave public shared
+  deployments running without it.
+- Set `clientIpHeader` in `createAuth` before the deployment is public, to a header the platform overwrites on
+  every request (`cf-connecting-ip` on Cloudflare). Without it the sign-in rate limiter is off (D80).
+- `createAuth` should validate `clientIpHeader` at startup: an invalid header name passes startup, and then every
+  `/api/auth/*` request answers 500.
+- Refuse the `.env.example` value of `BETTER_AUTH_SECRET` when `ENVIRONMENT` is not `local`.
 
 ## E3a. Platform opt-in
 
@@ -67,6 +93,9 @@ processes share one runtime, extracted from `adapters/local` rather than copied.
 Done when each adapter passes its port contract tests on an emulator or a stand-in, and its config validates
 offline. Acceptance criteria 1 to 4 need a real deployment, so each adapter is recorded as `emulated` until it
 has one. Deployments wait for the owner's consent, per platform.
+
+Each adapter sets `clientIpHeader` in `createAuth` before public exposure, to a header its platform overwrites on
+every request, and names it in its README (D80). Without it the sign-in rate limiter is off.
 
 Each adapter owns the bucket lifecycle rule from D74. Database claims keep overlapping scheduler runs safe (D19,
 D56, D67), but `protect: true` only stops overlap inside one process, so a platform that runs two scheduler

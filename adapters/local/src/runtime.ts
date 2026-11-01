@@ -1,3 +1,4 @@
+import { createAuth } from '@hostmark/auth';
 import type { CoreDeps } from '@hostmark/core';
 import type { Clock } from '@hostmark/core/ports';
 import { createNodeDb } from '@hostmark/db/node';
@@ -40,6 +41,13 @@ export interface Runtime {
 
 /** Telemetry first: instrumentation must exist before the first span, log or metric is created. */
 export function createRuntime(service: Service, env: Env): Runtime {
+  // Only the api handles sessions. It refuses to start without a real secret rather than run with a default (D88).
+  if (service === 'api' && (!env.BETTER_AUTH_SECRET || !env.PUBLIC_URL)) {
+    console.error(
+      'Invalid environment:\n  BETTER_AUTH_SECRET (32+ characters) and PUBLIC_URL are required by the api',
+    );
+    process.exit(1);
+  }
   const sdk = startNodeTelemetry({
     service,
     platform: PLATFORM,
@@ -52,14 +60,37 @@ export function createRuntime(service: Service, env: Env): Runtime {
   const telemetry = createTelemetry(service, { write: sdk.write });
   const nodeDb = createNodeDb(env.DATABASE_URL);
   const queue = createBullQueue(env.REDIS_URL, undefined, telemetry.logger);
+  const rum = {
+    ...(env.HOSTMARK_TOPOLOGY ? { topology: env.HOSTMARK_TOPOLOGY } : {}),
+    ...(env.HOSTMARK_REGION ? { region: env.HOSTMARK_REGION } : {}),
+  };
+  const auth =
+    service === 'api' && env.BETTER_AUTH_SECRET && env.PUBLIC_URL
+      ? createAuth({
+          db: nodeDb.db,
+          secret: env.BETTER_AUTH_SECRET,
+          baseUrl: new URL(env.PUBLIC_URL).origin,
+          clientIpHeader: env.AUTH_CLIENT_IP_HEADER || undefined,
+          trustedOrigins: env.AUTH_TRUSTED_ORIGINS.split(',')
+            .map((o) => o.trim())
+            .filter(Boolean),
+          signupEnabled: env.AUTH_SIGNUP_ENABLED === 'true',
+        })
+      : undefined;
   const deps: CoreDeps = {
+    auth,
     db: nodeDb.db,
     storage: createStorage(env),
     queue,
     images: createWasmImageProcessor(nodeLoader),
     clock: systemClock,
     telemetry,
-    config: { platform: PLATFORM, version: env.APP_VERSION },
+    config: {
+      platform: PLATFORM,
+      version: env.APP_VERSION,
+      publicUrl: env.PUBLIC_URL && new URL(env.PUBLIC_URL).origin,
+      rum,
+    },
   };
   return {
     deps,
