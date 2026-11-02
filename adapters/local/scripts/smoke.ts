@@ -67,14 +67,29 @@ function compose(args: string[], extraEnv: Record<string, string> = {}): string 
 // with a single replica and the run ends by restoring the replica count of the compose file.
 const ONE_WORKER = ['--scale', 'worker=1'];
 
+// `up` is always `--no-build`: the services share one image with `pull_policy: build`, so a plain `up` would
+// rebuild a changed tree and recreate only the worker, and the test would run a new worker against the old api
+// and scheduler. The stack under test is the one that is already running.
+
+/** Puts the workers back on the default backoff and replica count. A failure is reported, never thrown. */
+function restoreWorkers(): boolean {
+  try {
+    compose(['up', '-d', '--no-build', '--no-deps', 'worker']);
+    return true;
+  } catch (err) {
+    console.error(`could not restore the workers: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 // Ctrl-C in the middle of the chaos steps must not leave the worker with the test's short backoff.
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+for (const [signal, code] of [
+  ['SIGINT', 130],
+  ['SIGTERM', 143],
+] as const) {
   process.on(signal, () => {
-    try {
-      compose(['up', '-d', '--no-deps', 'worker']);
-    } finally {
-      process.exit(130);
-    }
+    restoreWorkers();
+    process.exit(code);
   });
 }
 
@@ -196,7 +211,7 @@ let readyFileId = '';
 let completeTraceId = '';
 const userId = 'seed-user';
 
-compose(['up', '-d', '--no-deps', ...ONE_WORKER, 'worker']);
+compose(['up', '-d', '--no-build', '--no-deps', ...ONE_WORKER, 'worker']);
 
 await step('stack is healthy', async () => {
   const health = await user.deepHealth();
@@ -365,7 +380,7 @@ await step('JPEG with EXIF reaches ready in under 60 s with three WebP variants'
 
 await step('chaos=fail: five attempts, status failed, message in the DLQ', async () => {
   // The real backoff schedule takes 400 s; scale it down for this run and restore it afterwards.
-  compose(['up', '-d', '--force-recreate', '--no-deps', ...ONE_WORKER, 'worker'], {
+  compose(['up', '-d', '--no-build', '--force-recreate', '--no-deps', ...ONE_WORKER, 'worker'], {
     QUEUE_BACKOFF_SCALE: SMOKE_BACKOFF_SCALE,
   });
   await sleep(3000);
@@ -398,7 +413,7 @@ await step('chaos=fail: five attempts, status failed, message in the DLQ', async
     );
     return `attempts ${file.attempts}, ${retried} retries, gaps ${gaps.map((g) => g.toFixed(1)).join('/')} s, one DLQ entry with the original message`;
   } finally {
-    compose(['up', '-d', '--force-recreate', '--no-deps', ...ONE_WORKER, 'worker']);
+    compose(['up', '-d', '--no-build', '--force-recreate', '--no-deps', ...ONE_WORKER, 'worker']);
   }
 });
 
@@ -641,7 +656,10 @@ if (RUN_LONG) {
 }
 
 // Whatever a step left behind: the workers run with the default backoff and replica count again.
-compose(['up', '-d', '--no-deps', 'worker']);
+await step('workers are back on the default backoff and replica count', async () => {
+  compose(['up', '-d', '--no-build', '--no-deps', 'worker']);
+  return undefined;
+});
 await sql.end();
 await dlq.close();
 

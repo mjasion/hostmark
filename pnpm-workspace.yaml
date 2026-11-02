@@ -5,8 +5,11 @@ packages:
 
 storeDir: .pnpm-store
 
-# The lockfile pins two releases that are younger than minimumReleaseAge (pnpm 12 refuses them otherwise). They are
-# named here instead of switching the check off. After 2026-11-01T05:07:30Z both are old enough: drop this list.
+# The lockfile pins three releases that were younger than minimumReleaseAge when they were added (pnpm 12 refuses them
+# otherwise). They are named here instead of switching the check off. bullmq and set-cookie-parser have been old
+# enough since 2026-11-01T05:07:30Z; @cloudflare/workers-types is old enough minimumReleaseAge after its publication.
+# Drop an entry once its release is old enough.
 minimumReleaseAgeExclude:
   - bullmq@6.5.3
   - set-cookie-parser@3.2.2
+  - "@cloudflare/workers-types@5.20261101.1"

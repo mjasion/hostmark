@@ -1,9 +1,11 @@
+import { files } from '@hostmark/db';
 import { startRecordingTelemetry } from '@hostmark/telemetry/testing';
-import { SpanKind } from '@opentelemetry/api';
+import { SpanKind, SpanStatusCode } from '@opentelemetry/api';
+import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDb, databaseUrl, KEYS, type TestDb } from './helpers/db';
 import { fakeImage } from './helpers/fakes';
-import { createHarness, type Harness } from './helpers/harness';
+import { createHarness, type Harness, lastMessage } from './helpers/harness';
 
 // A real SDK is registered, so ids and parents are real. The other suites run on the no-op tracer.
 const recording = startRecordingTelemetry();
@@ -62,5 +64,17 @@ describe.skipIf(!databaseUrl)('tracing over http', () => {
     await h.uploadAndComplete(KEYS.alice, fakeImage());
     await h.deliver(h.queue.messages()[0] as never);
     expect(recording.spans().find((s) => s.name === 'process_image')?.kind).toBe(SpanKind.CONSUMER);
+  });
+
+  it('marks the worker span as an error when the file counter made the job final and it returns (D72)', async () => {
+    const id = await h.uploadAndComplete(KEYS.alice, fakeImage());
+    await testDb.db.update(files).set({ attempts: 4 }).where(eq(files.id, id));
+    h.images.failWith = new Error('boom');
+    const msg = { ...lastMessage(h), jobId: crypto.randomUUID() };
+    await expect(h.deliver(msg, { attempt: 1 })).resolves.toBeUndefined();
+    const span = recording
+      .spans()
+      .find((s) => s.name === 'process_image' && s.attributes['job.id'] === msg.jobId);
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
   });
 });

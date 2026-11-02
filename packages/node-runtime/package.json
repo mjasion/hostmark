@@ -1,0 +1,48 @@
+{
+  "name": "@hostmark/node-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "exports": {
+    "./env": "./src/env.ts",
+    "./queue": "./src/queue.ts",
+    "./consumer": "./src/consumer.ts",
+    "./static": "./src/static.ts",
+    "./platform": "./src/platform.ts",
+    "./runtime": "./src/runtime.ts",
+    "./api": "./src/api.ts",
+    "./worker": "./src/worker.ts",
+    "./scheduler": "./src/scheduler.ts",
+    "./run-job": "./src/run-job.ts",
+    "./init-bucket": "./src/init-bucket.ts",
+    "./build": "./build.mjs",
+    "./testing": "./src/testing/index.ts",
+    "./testing/fixtures": "./src/testing/fixtures.ts",
+    "./testing/dockerfile": "./src/testing/dockerfile.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@hono/node-server": "2.1.5",
+    "@hostmark/auth": "workspace:*",
+    "@hostmark/contract": "workspace:*",
+    "@hostmark/core": "workspace:*",
+    "@hostmark/db": "workspace:*",
+    "@hostmark/image": "workspace:*",
+    "@hostmark/storage-s3": "workspace:*",
+    "@hostmark/telemetry": "workspace:*",
+    "@jsquash/jpeg": "1.6.0",
+    "aws4fetch": "1.0.20",
+    "bullmq": "6.5.3",
+    "croner": "11.0.0",
+    "esbuild": "0.28.2",
+    "hono": "4.13.14",
+    "ioredis": "6.0.0",
+    "postgres": "4.0.0",
+    "tsx": "4.23.15",
+    "zod": "4.6.7"
+  }
+}

@@ -3,6 +3,10 @@
 Portable runtime on Docker Compose: Node 22, Hono, Postgres, Redis (BullMQ), MinIO and `grafana/otel-lgtm`.
 This is the `local-portable` platform. The adapter only maps core ports to these services (see D60 to D69).
 
+The queue, storage wiring, env schema, entrypoint bodies, static serving and build script are the shared Node runtime in
+`packages/node-runtime` (D150), also used by `adapters/vps`, `adapters/fly` and `adapters/railway`. This directory keeps
+the five entrypoints (each passes `src/platform.ts`), the Dockerfile, the compose stack and the smoke test.
+
 ## Start
 
 ```sh
@@ -38,7 +42,7 @@ Compose-level (`.env`): `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `MI
 `AUTH_TRUSTED_ORIGINS`, `AUTH_CLIENT_IP_HEADER`, `HOSTMARK_PLATFORM`, `HOSTMARK_VARIANT`, `HOSTMARK_TOPOLOGY`, `HOSTMARK_REGION`, all optional).
 Nothing in `.env.example` is a secret.
 
-Process-level (validated by `src/env.ts`, which exits with a readable message on error):
+Process-level (validated by `packages/node-runtime/src/env.ts`, which exits with a readable message on error):
 
 | Variable                                                           | Default                                | Meaning                                                                                                               |
 | ------------------------------------------------------------------ | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
@@ -103,7 +107,9 @@ pnpm test                                  # from the repository root: every pac
 pnpm --filter @hostmark/adapter-local test # this package only
 ```
 
-Without these variables the dependent tests are skipped, not failed. The storage test uses `MINIO_ROOT_USER` and
+Without these variables the dependent tests are skipped, not failed. The queue, storage and image contracts run here through `test/contract.test.ts`
+(`describeNodePortContracts`, D152). The stall, Redis-down, env and static tests moved to `packages/node-runtime/test`:
+`pnpm --filter @hostmark/node-runtime test`. The storage test uses `MINIO_ROOT_USER` and
 `MINIO_ROOT_PASSWORD` defaults from `.env.example`; override with `S3_TEST_ACCESS_KEY` and `S3_TEST_SECRET_KEY` when
 you changed them. `stall.test.ts` (needs `REDIS_TEST_URL`) runs a child consumer that is killed and respawned: once
 until the job fails after five starts, once with a stalled start counted as an attempt; both expect one DLQ copy.
@@ -144,6 +150,6 @@ It reads `.env`, drives the stack through the typed client and checks: static pa
 `chaos=fail` (5 attempts, DLQ), `chaos=crash` (container restart, recovery), invalid bytes (1 attempt), non-admin
 `x-chaos` (403), `/media` headers and unpublish, trace link in Tempo, and the scheduler jobs on backdated rows. It
 also covers: image orientation by corner pixels, retry gaps, DLQ payloads, a double worker kill (stall twice, still
-`ready`), and deletion of variants. It recreates the worker with a small `QUEUE_BACKOFF_SCALE` for the chaos run and restores it, also on Ctrl-C. Takes about
+`ready`), and deletion of variants. It recreates the worker with a small `QUEUE_BACKOFF_SCALE` for the chaos run and restores it, also on Ctrl-C (the exit code is then 130 or 143, and a restore that fails is printed). It never builds: it tests the stack that is up (`docker compose up -d --wait`, D132). Takes about
 five minutes, mostly the crash recoveries. `SMOKE_LONG=1` adds one run on the real 400 s backoff schedule. Run one job by hand with
 `docker compose exec scheduler node dist/run-job.js requeue-stuck`.

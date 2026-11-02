@@ -8,7 +8,7 @@ import {
 } from '@hostmark/contract';
 import { files, fileVariants } from '@hostmark/db';
 import { linkFromMessage, withSpan } from '@hostmark/telemetry';
-import { SpanKind } from '@opentelemetry/api';
+import { type Span, SpanKind, SpanStatusCode } from '@opentelemetry/api';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { CoreDeps } from '../deps';
 import { InvalidImageError } from '../errors';
@@ -197,7 +197,7 @@ export async function processImage(deps: CoreDeps, msg: JobMessage, ctx: JobCont
           });
         });
       } catch (err) {
-        const rethrow = await handleFailure(deps, msg, ctx, claimed.attempts, err);
+        const rethrow = await handleFailure(deps, msg, ctx, claimed.attempts, err, root);
         if (!rethrow) return;
         throw err;
       }
@@ -281,6 +281,7 @@ async function handleFailure(
   ctx: JobContext,
   claimedAttempts: number,
   err: unknown,
+  root: Span,
 ): Promise<boolean> {
   const { db, clock, telemetry } = deps;
   const { logger, metrics } = telemetry;
@@ -312,10 +313,28 @@ async function handleFailure(
   }
   if (final) {
     if (updated.length > 0) metrics.jobsDeadLettered.add(1, attrs);
-    logger.error('process_image dead lettered', { fileId: msg.fileId, attempt: ctx.attempt, error: detail });
     // Acknowledge early only when this attempt recorded the failure on the row. Without a row update (a delete
     // won, so the failure may be a variant cleanup) the retry must happen: it cleans up on the claim miss (D54).
-    return ctx.attempt >= ctx.maxAttempts || updated.length === 0;
+    const rethrow = ctx.attempt >= ctx.maxAttempts || updated.length === 0;
+    if (rethrow) {
+      // The caller rethrows, which ends the span with an error. Only a final platform counter means a DLQ copy.
+      logger.error(
+        ctx.attempt >= ctx.maxAttempts
+          ? 'process_image dead lettered'
+          : 'process_image failed with no row left to fail, will retry',
+        { fileId: msg.fileId, attempt: ctx.attempt, error: detail },
+      );
+    } else {
+      // Returning ends the span without an error, so mark it here (D72).
+      root.recordException(detail);
+      root.setStatus({ code: SpanStatusCode.ERROR, message: detail.message });
+      logger.error('process_image failed, no DLQ copy', {
+        fileId: msg.fileId,
+        attempt: ctx.attempt,
+        error: detail,
+      });
+    }
+    return rethrow;
   }
   metrics.jobsRetried.add(1, attrs);
   logger.warn('process_image will be retried', { fileId: msg.fileId, attempt: ctx.attempt, error: detail });

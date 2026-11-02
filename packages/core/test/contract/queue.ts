@@ -19,6 +19,17 @@ export interface QueueConsumeHarness {
   next(waitMs: number): Promise<QueueDelivery | null>;
   /** Messages that reached the dead letter queue, waiting up to `waitMs` for `count` of them. */
   deadLettered(count: number, waitMs: number): Promise<JobMessage[]>;
+  /**
+   * Seconds that the platform makes a message wait after the first failed attempt (D17: BACKOFF_SECONDS[0], times
+   * any test scale). Absent when the platform cannot be made to honour it; the test is then a visible skip.
+   */
+  firstRetryDelaySeconds?: number;
+  /**
+   * Milliseconds after which a delivery that is neither acknowledged nor failed comes back as the next attempt
+   * (the visibility timeout of D17, possibly shortened for the test). Absent when the platform has no such timer,
+   * which is the case for push consumers, where a handler that throws or runs out of time is the only way back.
+   */
+  visibilityTimeoutMs?: number;
 }
 
 export interface QueueContractHarness {
@@ -39,8 +50,12 @@ const message = (fileId: string): JobMessage => ({
 });
 
 /** The next delivery of `jobId`; deliveries of other messages (leftovers of earlier tests) are acknowledged away. */
-async function nextFor(consume: QueueConsumeHarness, jobId: string): Promise<QueueDelivery> {
-  const deadline = Date.now() + 15_000;
+async function nextFor(
+  consume: QueueConsumeHarness,
+  jobId: string,
+  timeoutMs = 45_000,
+): Promise<QueueDelivery> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const d = await consume.next(2000);
     if (!d) continue;
@@ -119,6 +134,36 @@ export function describeQueueContract(name: string, factory: () => Promise<Queue
         await second.ack();
       });
 
+      it('makes a failed message wait for the backoff before the next attempt', async (ctx) => {
+        const delay = h.consume?.firstRetryDelaySeconds;
+        if (!h.consume || delay === undefined) return ctx.skip();
+        const msg = message(crypto.randomUUID());
+        await h.queue.send(msg);
+        const first = await nextFor(h.consume, msg.jobId);
+        const failedAt = Date.now();
+        await first.fail();
+        const second = await nextFor(h.consume, msg.jobId, delay * 1000 + 20_000);
+        const waited = Date.now() - failedAt;
+        expect(second.attempt).toBe(2);
+        expect(waited).toBeGreaterThanOrEqual(delay * 1000 * 0.9);
+        expect(waited).toBeLessThan(delay * 1000 + 15_000);
+        await second.ack();
+      }, 90_000);
+
+      it('redelivers a message that was neither acknowledged nor failed after the visibility timeout', async (ctx) => {
+        const timeout = h.consume?.visibilityTimeoutMs;
+        if (!h.consume || timeout === undefined) return ctx.skip();
+        const msg = message(crypto.randomUUID());
+        await h.queue.send(msg);
+        const first = await nextFor(h.consume, msg.jobId);
+        const deliveredAt = Date.now();
+        expect(first.attempt).toBe(1);
+        const second = await nextFor(h.consume, msg.jobId, timeout + 20_000);
+        expect(second.attempt).toBe(2);
+        expect(Date.now() - deliveredAt).toBeGreaterThanOrEqual(timeout * 0.9);
+        await second.ack();
+      }, 90_000);
+
       it('does not redeliver an acknowledged message', async (ctx) => {
         if (!h.consume) return ctx.skip();
         const msg = message(crypto.randomUUID());
@@ -147,7 +192,7 @@ export function describeQueueContract(name: string, factory: () => Promise<Queue
         // Nothing is left to deliver once it is dead.
         const again = await h.consume.next(500);
         expect(again?.message.jobId).not.toBe(msg.jobId);
-      });
+      }, 180_000);
     });
   });
 }

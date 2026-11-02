@@ -1,0 +1,73 @@
+{
+  "platforms": [
+    { "name": "local", "enabled": false, "adapter": "adapters/local", "status": "emulated", "secrets": [] },
+    {
+      "name": "cloudflare",
+      "enabled": false,
+      "adapter": "adapters/cloudflare",
+      "status": "emulated",
+      "secrets": ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+    },
+    {
+      "name": "gcp",
+      "enabled": false,
+      "adapter": "adapters/gcp",
+      "status": "emulated",
+      "secrets": ["GCP_PROJECT", "DOMAIN", "DATABASE_URL", "BETTER_AUTH_SECRET"]
+    },
+    {
+      "name": "aws",
+      "enabled": false,
+      "adapter": "adapters/aws",
+      "status": "emulated",
+      "secrets": [
+        "AWS_ROLE_ARN",
+        "AWS_REGION",
+        "AWS_CODE_BUCKET",
+        "DATABASE_URL",
+        "BETTER_AUTH_SECRET",
+        "ORIGIN_SECRET"
+      ]
+    },
+    {
+      "name": "railway",
+      "enabled": false,
+      "adapter": "adapters/railway",
+      "status": "emulated",
+      "secrets": ["RAILWAY_TOKEN"]
+    },
+    {
+      "name": "fly",
+      "enabled": false,
+      "adapter": "adapters/fly",
+      "status": "emulated",
+      "secrets": ["FLY_API_TOKEN"]
+    },
+    {
+      "name": "vercel",
+      "enabled": false,
+      "adapter": "adapters/vercel",
+      "status": "emulated",
+      "secrets": [
+        "VERCEL_TOKEN",
+        "VERCEL_ORG_ID",
+        "VERCEL_PROJECT_ID",
+        "DATABASE_URL",
+        "BETTER_AUTH_SECRET",
+        "CRON_SECRET",
+        "PUBLIC_URL",
+        "S3_ENDPOINT",
+        "S3_BUCKET",
+        "S3_ACCESS_KEY_ID",
+        "S3_SECRET_ACCESS_KEY"
+      ]
+    },
+    {
+      "name": "vps",
+      "enabled": false,
+      "adapter": "adapters/vps",
+      "status": "emulated",
+      "secrets": ["VPS_HOST", "VPS_SSH_USER", "VPS_SSH_KEY"]
+    }
+  ]
+}

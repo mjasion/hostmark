@@ -47,8 +47,8 @@ export async function seed(db: Database, options: SeedOptions = {}): Promise<See
     { userId: SEED_USER_ID, name: 'seed', isAdmin: false, provided: options.apiKey },
     { userId: SEED_ADMIN_USER_ID, name: 'seed-admin', isAdmin: true, provided: options.adminApiKey },
   ];
-  const plain: (string | undefined)[] = [];
-  const generated: boolean[] = [];
+  const plain: (string | undefined)[] = slots.map((slot) => slot.provided);
+  const generated: boolean[] = slots.map(() => false);
 
   await db.transaction(async (tx) => {
     await tx
@@ -60,46 +60,8 @@ export async function seed(db: Database, options: SeedOptions = {}): Promise<See
       .onConflictDoNothing();
 
     const wanted: { userId: string; keyHash: string; name: string; isAdmin: boolean }[] = [];
-    for (const slot of slots) {
-      let value = slot.provided;
-      if (value !== undefined) {
-        const keyHash = await hashApiKey(value);
-        // Rotation: a key left over from an earlier value must stop working. Uploads keep existing
-        // (api_key_id is nulled first, the foreign key also sets null on delete).
-        const stale = await tx
-          .select({ id: apiKeys.id })
-          .from(apiKeys)
-          .where(and(eq(apiKeys.userId, slot.userId), ne(apiKeys.keyHash, keyHash)));
-        const ids = stale.map((k) => k.id);
-        if (ids.length > 0) {
-          await tx.update(files).set({ apiKeyId: null }).where(inArray(files.apiKeyId, ids));
-          await tx.delete(apiKeys).where(inArray(apiKeys.id, ids));
-        }
-        wanted.push({ userId: slot.userId, keyHash, name: slot.name, isAdmin: slot.isAdmin });
-        generated.push(false);
-      } else {
-        const [existing] = await tx
-          .select({ id: apiKeys.id })
-          .from(apiKeys)
-          .where(eq(apiKeys.userId, slot.userId))
-          .limit(1);
-        if (existing) {
-          value = undefined;
-          generated.push(false);
-        } else {
-          value = generateApiKey();
-          wanted.push({
-            userId: slot.userId,
-            keyHash: await hashApiKey(value),
-            name: slot.name,
-            isAdmin: slot.isAdmin,
-          });
-          generated.push(true);
-        }
-      }
-      plain.push(value);
-    }
-    if (wanted.length > 0)
+    const upsert = async () => {
+      if (wanted.length === 0) return;
       await tx
         .insert(apiKeys)
         .values(wanted)
@@ -107,6 +69,47 @@ export async function seed(db: Database, options: SeedOptions = {}): Promise<See
           target: apiKeys.keyHash,
           set: { userId: sql`excluded.user_id`, name: sql`excluded.name`, isAdmin: sql`excluded.is_admin` },
         });
+      wanted.length = 0;
+    };
+
+    for (const slot of slots) {
+      if (slot.provided === undefined) continue;
+      const keyHash = await hashApiKey(slot.provided);
+      // Rotation: a key left over from an earlier value must stop working. Uploads keep existing
+      // (api_key_id is nulled first, the foreign key also sets null on delete).
+      const stale = await tx
+        .select({ id: apiKeys.id })
+        .from(apiKeys)
+        .where(and(eq(apiKeys.userId, slot.userId), ne(apiKeys.keyHash, keyHash)));
+      const ids = stale.map((k) => k.id);
+      if (ids.length > 0) {
+        await tx.update(files).set({ apiKeyId: null }).where(inArray(files.apiKeyId, ids));
+        await tx.delete(apiKeys).where(inArray(apiKeys.id, ids));
+      }
+      wanted.push({ userId: slot.userId, keyHash, name: slot.name, isAdmin: slot.isAdmin });
+    }
+    // Before the unset slots look: a provided value can be the key the other seed user holds, and takes it over.
+    await upsert();
+
+    for (const [i, slot] of slots.entries()) {
+      if (slot.provided !== undefined) continue;
+      const [existing] = await tx
+        .select({ id: apiKeys.id })
+        .from(apiKeys)
+        .where(eq(apiKeys.userId, slot.userId))
+        .limit(1);
+      if (existing) continue;
+      const value = generateApiKey();
+      wanted.push({
+        userId: slot.userId,
+        keyHash: await hashApiKey(value),
+        name: slot.name,
+        isAdmin: slot.isAdmin,
+      });
+      plain[i] = value;
+      generated[i] = true;
+    }
+    await upsert();
   });
 
   return {

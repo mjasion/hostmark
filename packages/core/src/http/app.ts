@@ -48,6 +48,7 @@ import { type FileRow, toFileResponses, toStatusEvent } from './files';
 import { probe } from './health';
 import { problemResponse, randomTraceId } from './problem';
 import { htmlResponse, PUBLIC_PAGE_CACHE, pageModel, pageOrigin, rumAttributes } from './public';
+import { publicPaths } from './purge';
 
 export interface AppOptions {
   /** Per dependency probe of `/api/health/deep`. */
@@ -60,6 +61,14 @@ const AUTH_MAX_BODY_BYTES = 64 * 1024;
 const TERMINAL = new Set(['ready', 'failed', 'deleted']);
 const MEDIA_FILE = /^(\d+)\.webp$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * D100: a public URL is cached and purged by path, and a purge matches the path as written. An uppercase or
+ * percent-encoded id would reach the same row under a path the purge does not cover, so only the canonical form (the
+ * lowercase id, exactly as in the raw request path) is served.
+ */
+const hasCanonicalId = (c: Context<HttpEnv>, id: string): boolean =>
+  UUID.test(id) && id === id.toLowerCase() && new URL(c.req.url).pathname.split('/')[2] === id;
 
 // Once per instance (isolate or process), not per request.
 let coldStartRecorded = false;
@@ -425,12 +434,19 @@ export function createApp(
       .where(and(eq(files.id, id), eq(files.userId, c.get('principal').userId), isNull(files.deletedAt)))
       .returning();
     if (!row) throw new NotFoundError('File not found');
+    // D100: the row is already private. A failed purge answers 503 and the same PATCH again retries it.
+    if (!isPublic && deps.purger) {
+      await deps.purger.purge(publicPaths(row.id)).catch((error) => {
+        deps.telemetry.logger.error('cdn purge failed', { fileId: row.id, error });
+        throw new ServiceUnavailableError('The file is private now, but the CDN could not be purged; retry');
+      });
+    }
     const [response] = await toFileResponses(deps, [row]);
     return c.json(response as NonNullable<typeof response>, 200);
   });
 
   app.openapi(apiRoutes.deleteFile, async (c) => {
-    const { db, clock } = c.get('deps');
+    const { db, clock, purger, telemetry } = c.get('deps');
     const { id } = c.req.valid('param');
     const now = clock.now();
     const deleted = await db
@@ -439,6 +455,11 @@ export function createApp(
       .where(and(eq(files.id, id), eq(files.userId, c.get('principal').userId), isNull(files.deletedAt)))
       .returning({ id: files.id });
     if (deleted.length === 0) throw new NotFoundError('File not found');
+    // D100: best effort here, because a retry of DELETE would answer 404. The delete_file job purges again and
+    // is retried by the queue, so a failure here is not final.
+    await purger?.purge(publicPaths(id)).catch((error) => {
+      telemetry.logger.warn('cdn purge failed, the delete_file job retries it', { fileId: id, error });
+    });
     return c.body(null, 204);
   });
 
@@ -550,7 +571,11 @@ export function createApp(
     const file = c.req.param('file');
     const size = Number(MEDIA_FILE.exec(file)?.[1]);
     // `0128.webp` would otherwise be a second immutable URL for the same object.
-    if (!UUID.test(id) || file !== `${size}.webp` || !(VARIANT_SIZES as readonly number[]).includes(size)) {
+    if (
+      !hasCanonicalId(c as Context<HttpEnv>, id) ||
+      file !== `${size}.webp` ||
+      !(VARIANT_SIZES as readonly number[]).includes(size)
+    ) {
       throw new NotFoundError('Not found');
     }
     const [row] = await db
@@ -577,7 +602,7 @@ export function createApp(
     const { db, config, telemetry } = c.get('deps');
     const rum = rumAttributes(config);
     const id = c.req.param('id');
-    if (!UUID.test(id)) return pageError(404, renderNotFound(rum));
+    if (!hasCanonicalId(c as Context<HttpEnv>, id)) return pageError(404, renderNotFound(rum));
     const [row] = await withSpan(telemetry.tracer, 'db.select_public_file', () =>
       db
         .select({

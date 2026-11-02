@@ -1,5 +1,5 @@
 import type { Telemetry } from '@hostmark/telemetry';
-import type { Clock, Db, ImageProcessor, ObjectStorage, Queue } from './ports';
+import type { CachePurger, Clock, Db, ImageProcessor, ObjectStorage, Queue } from './ports';
 
 export interface AppConfig {
   /** `x-platform` header, e.g. `cloudflare-portable`; also the `daily_stats.platform` key. */
@@ -32,4 +32,6 @@ export interface CoreDeps {
   telemetry: Telemetry;
   config: AppConfig;
   auth?: SessionAuth;
+  /** D100: required wherever a CDN caches `/media` and `/f`; see `CachePurger`. */
+  purger?: CachePurger;
 }

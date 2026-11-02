@@ -50,6 +50,16 @@ export interface ImageProcessor {
   }>;
 }
 
+/**
+ * D100: removes cached copies of public URLs from a CDN in front of the api. `paths` are exact URL paths of the
+ * app (`/media/<id>/128.webp`, `/f/<id>`), never URLs: the adapter knows its origin and its CDN. Resolves once the
+ * CDN accepted the purge and rejects when it did not, so that the caller can retry. Absent when no CDN caches the
+ * app, which only a `local` deployment may be.
+ */
+export interface CachePurger {
+  purge(paths: string[]): Promise<void>;
+}
+
 export interface Clock {
   now(): Date;
   /** chaos=slow; makes it testable. */

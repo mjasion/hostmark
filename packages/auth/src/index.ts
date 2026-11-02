@@ -25,12 +25,25 @@ export interface AuthOptions {
   signupEnabled: boolean;
 }
 
+/** The value in `adapters/local/.env.example`. It is public, so a deployment that signs sessions with it has none. */
+export const EXAMPLE_AUTH_SECRET = 'hm_local_auth_secret_replace_me_000000000000000000000000';
+
+/** Throws when `secret` is the example value and the environment is not `local`; every adapter calls it at startup. */
+export function refuseExampleSecret(secret: string, environment: string): void {
+  if (environment !== 'local' && secret.trim() === EXAMPLE_AUTH_SECRET) {
+    throw new Error(
+      `BETTER_AUTH_SECRET is the example value from .env.example, which is public; set a secret of your own when ENVIRONMENT is "${environment}"`,
+    );
+  }
+}
+
 /**
  * D7, D80: Better Auth over the existing tables, email and password only, sessions in Postgres. Nothing here
  * imports a Node module, so it runs on Workers too.
  */
 export function createAuth(options: AuthOptions): SessionAuth {
   const clientIpHeader = options.clientIpHeader?.trim().toLowerCase() || undefined;
+  if (clientIpHeader) assertHeaderName(clientIpHeader);
   const auth = betterAuth({
     database: drizzleAdapter(options.db, { provider: 'pg', schema }),
     secret: options.secret,
@@ -73,6 +86,15 @@ export function createAuth(options: AuthOptions): SessionAuth {
       return session ? { userId: session.user.id } : null;
     },
   };
+}
+
+/** An invalid name would pass startup and then make every `/api/auth/*` request throw in `headers.get`. */
+function assertHeaderName(name: string): void {
+  try {
+    new Headers().get(name);
+  } catch {
+    throw new Error(`clientIpHeader: "${name}" is not a valid HTTP header name such as cf-connecting-ip`);
+  }
 }
 
 function normalizeOrigin(entry: string): string {

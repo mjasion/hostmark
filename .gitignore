@@ -37,3 +37,15 @@ load/results/*
 
 # Generated load-test fixtures (load/tools/fixtures.mjs)
 load/fixtures/
+
+# Per pull request wrangler configs written by adapters/cloudflare/pipeline
+adapters/cloudflare/wrangler.*.generated.jsonc
+
+# Terraform state holds secrets (adapters/gcp/infra)
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# adapters/vercel: web build copied next to the functions, and the linked project
+adapters/vercel/public/
+.vercel/

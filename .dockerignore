@@ -11,4 +11,7 @@ docs
 **/test-results
 **/playwright-report
 **/*.tsbuildinfo
+**/.terraform
+**/*.tfstate
+**/*.tfstate.*
 load

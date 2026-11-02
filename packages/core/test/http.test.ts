@@ -782,9 +782,10 @@ describe.skipIf(!databaseUrl)('http', () => {
       expect((await h.request(`/media/${pub}/512.webp`)).status).toBe(404);
     });
 
-    it('serves an uppercase id and refuses non-canonical size spellings (m11, m12)', async () => {
+    it('refuses an uppercase id (D100) and non-canonical size spellings (m11, m12)', async () => {
       const id = await readyFile(true);
-      expect((await h.request(`/media/${id.toUpperCase()}/128.webp`)).status).toBe(200);
+      // An alias would be cached under a path that the purge of D100 does not cover.
+      expect((await h.request(`/media/${id.toUpperCase()}/128.webp`)).status).toBe(404);
       for (const file of ['0128.webp', '00512.webp', '+128.webp']) {
         expect((await h.request(`/media/${id}/${file}`)).status).toBe(404);
       }

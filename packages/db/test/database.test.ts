@@ -63,6 +63,49 @@ describe.skipIf(!url)('database', () => {
     await node.db.delete(files).where(eq(files.id, id));
   });
 
+  it('keeps the row id and the uploads linked to it when the same values are seeded again', async () => {
+    await seed(node.db, { apiKey: 'same-regular', adminApiKey: 'same-admin' });
+    const byHash = async (key: string) =>
+      (
+        await node.db
+          .select()
+          .from(apiKeys)
+          .where(eq(apiKeys.keyHash, await hashApiKey(key)))
+      )[0];
+    const before = await byHash('same-regular');
+    const adminBefore = await byHash('same-admin');
+    const id = crypto.randomUUID();
+    await node.db.insert(files).values({
+      id,
+      userId: 'seed-user',
+      apiKeyId: before?.id,
+      contentType: 'image/png',
+      originalKey: `originals/seed-user/${id}`,
+      expiresAt: new Date(),
+    });
+
+    await seed(node.db, { apiKey: 'same-regular', adminApiKey: 'same-admin' });
+    expect((await byHash('same-regular'))?.id).toBe(before?.id);
+    expect((await byHash('same-admin'))?.id).toBe(adminBefore?.id);
+    const [file] = await node.db.select().from(files).where(eq(files.id, id));
+    expect(file?.apiKeyId).toBe(before?.id);
+    await node.db.delete(files).where(eq(files.id, id));
+  });
+
+  it('leaves the other seed user a key when a provided value is the key that user holds', async () => {
+    await wipeSeedKeys();
+    const first = await seed(node.db);
+    const adminValue = first.adminApiKey as string;
+    // The admin key moves to seed-user; seed-admin is unset, so it must not be left without a key.
+    const second = await seed(node.db, { apiKey: adminValue });
+    expect(await keysOf('seed-user')).toEqual([await hashApiKey(adminValue)]);
+    const adminKeys = await keysOf('seed-admin');
+    expect(adminKeys).toHaveLength(1);
+    expect(adminKeys).not.toContain(await hashApiKey(adminValue));
+    expect(second.generated).toEqual({ apiKey: false, adminApiKey: true });
+    expect(adminKeys).toEqual([await hashApiKey(second.adminApiKey as string)]);
+  });
+
   it('rejects equal values for both keys', async () => {
     await expect(seed(node.db, { apiKey: 'same', adminApiKey: 'same' })).rejects.toThrow(/differ/);
   });

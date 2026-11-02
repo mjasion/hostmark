@@ -214,6 +214,9 @@ describe.skipIf(!databaseUrl)('process_image', () => {
     await expect(h.deliver(lastMessage(h), { attempt: 1 })).resolves.toBeUndefined();
     expect(await h.row(id)).toMatchObject({ status: 'failed', attempts: 5 });
     expect(h.telemetry.of('jobsDeadLettered')).toHaveLength(1);
+    // No DLQ copy exists on this path, so the log must not claim one.
+    expect(h.telemetry.logs.some((l) => l.msg === 'process_image dead lettered')).toBe(false);
+    expect(h.telemetry.logs.some((l) => l.level === 'error' && l.msg.includes('no DLQ copy'))).toBe(true);
   });
 
   it('rethrows when the platform counter is final, so the message reaches the DLQ (D55)', async () => {
@@ -223,6 +226,7 @@ describe.skipIf(!databaseUrl)('process_image', () => {
     await expect(h.deliver(lastMessage(h), { attempt: 5 })).rejects.toThrow('boom');
     expect(await h.row(id)).toMatchObject({ status: 'failed' });
     expect(h.telemetry.of('jobsDeadLettered')).toHaveLength(1);
+    expect(h.telemetry.logs.some((l) => l.msg === 'process_image dead lettered')).toBe(true);
   });
 
   it('logs the cause of a permanent failure (N8)', async () => {

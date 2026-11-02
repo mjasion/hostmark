@@ -8,9 +8,8 @@ import { createS3Storage } from '@hostmark/storage-s3';
 import { createTelemetry, type Telemetry } from '@hostmark/telemetry';
 import { type NodeTelemetry, startNodeTelemetry } from '@hostmark/telemetry/node';
 import type { Env } from './env';
+import type { NodePlatform } from './platform';
 import { type BullQueueHandle, createBullQueue } from './queue';
-
-export const PLATFORM = 'local-portable';
 
 export type Service = 'api' | 'worker' | 'scheduler';
 
@@ -40,7 +39,7 @@ export interface Runtime {
 }
 
 /** Telemetry first: instrumentation must exist before the first span, log or metric is created. */
-export function createRuntime(service: Service, env: Env): Runtime {
+export function createRuntime(service: Service, env: Env, platform: NodePlatform): Runtime {
   // Only the api handles sessions. It refuses to start without a real secret rather than run with a default (D88).
   if (service === 'api' && (!env.BETTER_AUTH_SECRET || !env.PUBLIC_URL)) {
     console.error(
@@ -50,7 +49,7 @@ export function createRuntime(service: Service, env: Env): Runtime {
   }
   const sdk = startNodeTelemetry({
     service,
-    platform: PLATFORM,
+    platform: platform.key,
     variant: 'portable',
     imageImpl: 'wasm',
     version: env.APP_VERSION,
@@ -86,7 +85,7 @@ export function createRuntime(service: Service, env: Env): Runtime {
     clock: systemClock,
     telemetry,
     config: {
-      platform: PLATFORM,
+      platform: platform.key,
       version: env.APP_VERSION,
       publicUrl: env.PUBLIC_URL && new URL(env.PUBLIC_URL).origin,
       rum,

@@ -3,6 +3,7 @@ import { files, fileVariants } from '@hostmark/db';
 import { withSpan } from '@hostmark/telemetry';
 import { and, eq, isNull } from 'drizzle-orm';
 import type { CoreDeps } from '../deps';
+import { publicPaths } from '../http/purge';
 
 /**
  * D19: purge the objects of a `deleted` file. Keys are computed rather than read from `file_variants`, so
@@ -24,6 +25,8 @@ export async function deleteFile(deps: CoreDeps, msg: JobMessage): Promise<void>
         telemetry.logger.info('delete_file skipped', { fileId: msg.fileId, status: file?.status });
         return;
       }
+      // D100: first, so that nothing keeps serving the object that the next line removes. Rejects to be retried.
+      await deps.purger?.purge(publicPaths(msg.fileId));
       await storage.delete([
         originalKey(file.userId, msg.fileId),
         ...VARIANT_SIZES.map((size) => variantKey(file.userId, msg.fileId, size)),

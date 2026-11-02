@@ -17,6 +17,8 @@ export interface S3StorageOptions {
   region: string;
   accessKeyId: string;
   secretAccessKey: string;
+  /** Temporary credentials (an IAM role on AWS Lambda) carry a session token that every signature must include. */
+  sessionToken?: string;
   fetch?: typeof fetch;
 }
 
@@ -69,6 +71,7 @@ export function createS3Storage(options: S3StorageOptions): ObjectStorage {
   const client = new AwsClient({
     accessKeyId: options.accessKeyId,
     secretAccessKey: options.secretAccessKey,
+    sessionToken: options.sessionToken,
     service: 's3',
     region: options.region,
     cache,
@@ -114,6 +117,7 @@ export function createS3Storage(options: S3StorageOptions): ObjectStorage {
       headers,
       accessKeyId: options.accessKeyId,
       secretAccessKey: options.secretAccessKey,
+      sessionToken: options.sessionToken,
       service: 's3',
       region: options.region,
       cache,
