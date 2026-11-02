@@ -1,0 +1,74 @@
+# Deploy from the repository root (README): the image needs the whole workspace.
+#   fly deploy --config adapters/fly/fly.toml --dockerfile adapters/fly/Dockerfile --ha=false .
+# The app name is global on Fly: change it before the first `fly launch --no-deploy --copy-config`.
+app = "hostmark-fly"
+primary_region = "fra"
+
+# Waits for a job in progress on SIGTERM (BullMQ lock: 60 s) and for the scheduler's run (20 s).
+kill_timeout = 70
+
+[build]
+  dockerfile = "Dockerfile"
+
+  # RUM attributes of the web build (D85); closed lists in packages/contract.
+  [build.args]
+    HOSTMARK_PLATFORM = "fly"
+    HOSTMARK_VARIANT = "portable"
+    HOSTMARK_TOPOLOGY = "single"
+    HOSTMARK_REGION = "frankfurt"
+
+[env]
+  ENVIRONMENT = "production"
+  WORKER_CONCURRENCY = "1"
+  AUTH_SIGNUP_ENABLED = "true"
+  HOSTMARK_TOPOLOGY = "single"
+  HOSTMARK_REGION = "frankfurt"
+
+# Runs in a temporary machine of the new image before the machines are replaced: bucket and lifecycle (D74), schema,
+# seed keys. All three are idempotent.
+[deploy]
+  release_command = "sh -c 'node dist/init-bucket.js && node dist/migrate.js && node dist/seed.js'"
+
+# Three process groups, one image. `scheduler` must have exactly one machine (README).
+[processes]
+  api = "node --enable-source-maps dist/api.js"
+  worker = "node --enable-source-maps dist/worker.js"
+  scheduler = "node --enable-source-maps dist/scheduler.js"
+
+# Only the api group receives traffic. The scheduler and worker groups have no service and so no public port.
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  processes = ["api"]
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/api/health"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+# A crashed process comes back whatever its exit code (chaos=crash exits 1, D63).
+[[restart]]
+  policy = "always"
+  processes = ["worker", "scheduler", "api"]
+
+# Peak memory of one worker process is 3.0 to 3.2 GiB (D79), hence 4 GB. Machine sizes were not verified against the
+# current Fly documentation.
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "4gb"
+  processes = ["worker"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+  processes = ["api"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  processes = ["scheduler"]

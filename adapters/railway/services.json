@@ -1,0 +1,29 @@
+{
+  "_comment": "Settings of the three Railway services, to enter in the dashboard (or send with serviceInstanceUpdate / `railway environment edit --service-config`, unverified). Not read by Railway: Config as Code is deprecated and new services cannot use it. Key names follow the former railway.json deploy section; memory is in bytes. The adapter test checks these values.",
+  "dockerfilePath": "adapters/railway/Dockerfile",
+  "services": {
+    "api": {
+      "startCommand": "node --enable-source-maps dist/api.js",
+      "preDeployCommand": "sh -c 'node dist/init-bucket.js && node dist/migrate.js && node dist/seed.js'",
+      "numReplicas": 1,
+      "healthcheckPath": "/api/health",
+      "healthcheckTimeout": 60,
+      "drainingSeconds": 10,
+      "restartPolicyType": "ALWAYS"
+    },
+    "worker": {
+      "startCommand": "node --enable-source-maps dist/worker.js",
+      "numReplicas": 2,
+      "memoryBytes": 4294967296,
+      "drainingSeconds": 70,
+      "restartPolicyType": "ALWAYS"
+    },
+    "scheduler": {
+      "startCommand": "node --enable-source-maps dist/scheduler.js",
+      "numReplicas": 1,
+      "overlapSeconds": 0,
+      "drainingSeconds": 30,
+      "restartPolicyType": "ALWAYS"
+    }
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "cd ../.. && pnpm install --frozen-lockfile",
+  "buildCommand": "cd ../.. && HOSTMARK_PLATFORM=vercel HOSTMARK_VARIANT=portable HOSTMARK_TOPOLOGY=single HOSTMARK_REGION=frankfurt pnpm --filter @hostmark/web build && rm -rf adapters/vercel/public && cp -r apps/web/dist adapters/vercel/public",
+  "outputDirectory": "public",
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 60,
+      "includeFiles": "node_modules/@jsquash/**/*.wasm"
+    },
+    "api/cron.ts": {
+      "maxDuration": 300
+    },
+    "api/queue.ts": {
+      "maxDuration": 300,
+      "includeFiles": "node_modules/@jsquash/**/*.wasm",
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "image-jobs",
+          "retryAfterSeconds": 30
+        }
+      ]
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron?job=requeue-stuck",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron?job=cleanup-expired",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron?job=daily-stats",
+      "schedule": "5 0 * * *"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/((?!cron$|queue$).*)",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/media/(.*)",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/f/(.*)",
+      "destination": "/api/index"
+    },
+    {
+      "source": "/((?!api/|media/|f/).*)",
+      "destination": "/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/assets/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    }
+  ]
+}

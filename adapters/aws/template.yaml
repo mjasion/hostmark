@@ -1,0 +1,553 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  hostmark on AWS (aws-portable): CloudFront in front of a Lambda function URL (api) and an S3 origin (web app),
+  S3 for files, SQS with a dead letter queue feeding a Lambda worker, EventBridge Scheduler for the three jobs.
+  Database: an external PostgreSQL (the shared Neon database, D71). Nothing here is deployed by the repository.
+
+Parameters:
+  DatabaseUrl:
+    Type: String
+    NoEcho: true
+    Description: PostgreSQL connection string of the shared database (D71).
+  BetterAuthSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+  OriginSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: Shared by CloudFront (origin custom header) and the api, which refuses requests without it (D80).
+  CodeBucket:
+    Type: String
+    Default: ""
+    Description: Unused by the template; the deploy script passes the packaging bucket to `aws cloudformation package`.
+  DistributionId:
+    Type: String
+    Default: ""
+    Description: >-
+      Second deploy pass only (the script fills it from the Distribution output). Lambda environments cannot refer to
+      the distribution that refers to the functions.
+  PublicUrl:
+    Type: String
+    Default: "https://example.invalid"
+    Description: Second deploy pass only; https://<distribution domain> (or a custom domain).
+  AppVersion:
+    Type: String
+    Default: dev
+  Environment:
+    Type: String
+    Default: production
+  HostmarkRegion:
+    Type: String
+    Default: ""
+    Description: RUM attribute `region` (a closed list, D85); empty keeps the build default.
+  HostmarkTopology:
+    Type: String
+    Default: ""
+  WorkerMemory:
+    Type: Number
+    Default: 3008
+    MinValue: 512
+    MaxValue: 10240
+    Description: MB. Image decoding holds about 23 bytes per pixel in wasm; 3008 fits the 50 MP limit (D31).
+  WorkerMaxConcurrency:
+    Type: Number
+    Default: 10
+    MinValue: 2
+    MaxValue: 1000
+    Description: Concurrent worker invocations from the queue. Each holds one database connection.
+  AuthSignupEnabled:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+  PriceClass:
+    Type: String
+    Default: PriceClass_100
+    AllowedValues: [PriceClass_100, PriceClass_200, PriceClass_All]
+
+Conditions:
+  HasDistribution: !Not [!Equals [!Ref DistributionId, ""]]
+  HasRegion: !Not [!Equals [!Ref HostmarkRegion, ""]]
+  HasTopology: !Not [!Equals [!Ref HostmarkTopology, ""]]
+
+Resources:
+  # ---- Storage -------------------------------------------------------------------------------------------------
+  Bucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      # D74: originals/ and variants/ expire after 8 days. Safe only while expires_at stays at 7 days from creation.
+      LifecycleConfiguration:
+        Rules:
+          - { Id: expire-originals, Status: Enabled, Prefix: originals/, ExpirationInDays: 8 }
+          - { Id: expire-variants, Status: Enabled, Prefix: variants/, ExpirationInDays: 8 }
+          - {
+              Id: abort-multipart,
+              Status: Enabled,
+              AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 },
+            }
+      # Browsers PUT to presigned URLs and GET variants from them (D62).
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: ["*"]
+            AllowedMethods: [GET, PUT]
+            AllowedHeaders: [Content-Type]
+            MaxAge: 3600
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Bucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: TlsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt Bucket.Arn, !Sub "${Bucket.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+          # CloudFront reads the web app under site/ only; uploads and variants are never served from here.
+          - Sid: CloudFrontReadsSite
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: "s3:GetObject"
+            Resource: !Sub "${Bucket.Arn}/site/*"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  # ---- Queue ---------------------------------------------------------------------------------------------------
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  JobQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      # Six times the worker timeout (60 s): the AWS recommendation for an event source mapping. It is also how long a
+      # crashed or timed out invocation holds its message before the next attempt.
+      VisibilityTimeout: 360
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 5
+
+  # ---- Functions -----------------------------------------------------------------------------------------------
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-api", RetentionInDays: 14 }
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-worker", RetentionInDays: 14 }
+  SchedulerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-scheduler", RetentionInDays: 14 }
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: "sts:AssumeRole" }
+      Policies:
+        - PolicyName: api
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ["logs:CreateLogStream", "logs:PutLogEvents"]
+                Resource: !GetAtt ApiLogGroup.Arn
+              - Effect: Allow
+                Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+                Resource: [!Sub "${Bucket.Arn}/originals/*", !Sub "${Bucket.Arn}/variants/*"]
+              - Effect: Allow
+                Action: ["sqs:SendMessage", "sqs:GetQueueAttributes"]
+                Resource: !GetAtt JobQueue.Arn
+              - !If
+                - HasDistribution
+                - Effect: Allow
+                  Action: "cloudfront:CreateInvalidation"
+                  Resource: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${DistributionId}"
+                - !Ref AWS::NoValue
+
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: "sts:AssumeRole" }
+      Policies:
+        - PolicyName: worker
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ["logs:CreateLogStream", "logs:PutLogEvents"]
+                Resource: !GetAtt WorkerLogGroup.Arn
+              - Effect: Allow
+                Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+                Resource: [!Sub "${Bucket.Arn}/originals/*", !Sub "${Bucket.Arn}/variants/*"]
+              # The event source mapping needs receive, delete and attributes; the handler changes the visibility
+              # timeout to apply the backoff (D17) and may enqueue.
+              - Effect: Allow
+                Action:
+                  - "sqs:ReceiveMessage"
+                  - "sqs:DeleteMessage"
+                  - "sqs:GetQueueAttributes"
+                  - "sqs:ChangeMessageVisibility"
+                  - "sqs:SendMessage"
+                Resource: !GetAtt JobQueue.Arn
+              - !If
+                - HasDistribution
+                - Effect: Allow
+                  Action: "cloudfront:CreateInvalidation"
+                  Resource: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${DistributionId}"
+                - !Ref AWS::NoValue
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - { Effect: Allow, Principal: { Service: lambda.amazonaws.com }, Action: "sts:AssumeRole" }
+      Policies:
+        - PolicyName: scheduler
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ["logs:CreateLogStream", "logs:PutLogEvents"]
+                Resource: !GetAtt SchedulerLogGroup.Arn
+              - Effect: Allow
+                Action: ["sqs:SendMessage", "sqs:GetQueueAttributes"]
+                Resource: !GetAtt JobQueue.Arn
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ApiLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-api"
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      Handler: index.handler
+      Code: ./dist/api
+      MemorySize: 1024
+      # The upload progress stream (SSE) runs up to 60 s (D20).
+      Timeout: 90
+      Role: !GetAtt ApiRole.Arn
+      LoggingConfig: { LogGroup: !Ref ApiLogGroup }
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          APP_VERSION: !Ref AppVersion
+          PUBLIC_URL: !Ref PublicUrl
+          DATABASE_URL: !Ref DatabaseUrl
+          BETTER_AUTH_SECRET: !Ref BetterAuthSecret
+          AUTH_SIGNUP_ENABLED: !Ref AuthSignupEnabled
+          ORIGIN_SECRET: !Ref OriginSecret
+          S3_BUCKET: !Ref Bucket
+          SQS_QUEUE_URL: !Ref JobQueue
+          CLOUDFRONT_DISTRIBUTION_ID: !Ref DistributionId
+          HOSTMARK_REGION: !If [HasRegion, !Ref HostmarkRegion, !Ref AWS::NoValue]
+          HOSTMARK_TOPOLOGY: !If [HasTopology, !Ref HostmarkTopology, !Ref AWS::NoValue]
+
+  ApiUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt ApiFunction.Arn
+      # Public by design: CloudFront cannot sign POST and PUT bodies for an IAM protected URL (OAC needs the client to
+      # send x-amz-content-sha256), so the api checks the origin secret instead (README, "Client address header").
+      AuthType: NONE
+      InvokeMode: RESPONSE_STREAM
+
+  ApiUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref ApiFunction
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ApiFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
+  WorkerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: WorkerLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-worker"
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      Handler: index.handler
+      Code: ./dist/worker
+      MemorySize: !Ref WorkerMemory
+      Timeout: 60
+      Role: !GetAtt WorkerRole.Arn
+      LoggingConfig: { LogGroup: !Ref WorkerLogGroup }
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          APP_VERSION: !Ref AppVersion
+          PUBLIC_URL: !Ref PublicUrl
+          DATABASE_URL: !Ref DatabaseUrl
+          BETTER_AUTH_SECRET: !Ref BetterAuthSecret
+          S3_BUCKET: !Ref Bucket
+          SQS_QUEUE_URL: !Ref JobQueue
+          CLOUDFRONT_DISTRIBUTION_ID: !Ref DistributionId
+
+  WorkerMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      FunctionName: !Ref WorkerFunction
+      EventSourceArn: !GetAtt JobQueue.Arn
+      # One message per invocation: the attempt number and the backoff are per message (D17).
+      BatchSize: 1
+      FunctionResponseTypes: [ReportBatchItemFailures]
+      ScalingConfig: { MaximumConcurrency: !Ref WorkerMaxConcurrency }
+
+  SchedulerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: SchedulerLogGroup
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-scheduler"
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      Handler: index.handler
+      Code: ./dist/scheduler
+      MemorySize: 512
+      Timeout: 120
+      Role: !GetAtt SchedulerRole.Arn
+      LoggingConfig: { LogGroup: !Ref SchedulerLogGroup }
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          APP_VERSION: !Ref AppVersion
+          PUBLIC_URL: !Ref PublicUrl
+          DATABASE_URL: !Ref DatabaseUrl
+          BETTER_AUTH_SECRET: !Ref BetterAuthSecret
+          S3_BUCKET: !Ref Bucket
+          SQS_QUEUE_URL: !Ref JobQueue
+          CLOUDFRONT_DISTRIBUTION_ID: !Ref DistributionId
+
+  # ---- Scheduler -----------------------------------------------------------------------------------------------
+  # EventBridge Scheduler fires each schedule once, so there is exactly one run per tick whatever the number of
+  # function instances; D56 makes an overlapping run harmless anyway. Cron fields: minutes hours day-of-month month
+  # day-of-week year, in UTC (the schedule's default time zone). The expressions mirror SCHEDULER_JOBS (D19).
+  SchedulerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: "sts:AssumeRole"
+            Condition: { StringEquals: { "aws:SourceAccount": !Ref "AWS::AccountId" } }
+      Policies:
+        - PolicyName: invoke
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - { Effect: Allow, Action: "lambda:InvokeFunction", Resource: !GetAtt SchedulerFunction.Arn }
+
+  CleanupExpiredSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${AWS::StackName}-cleanup-expired"
+      ScheduleExpression: "cron(*/15 * * * ? *)"
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt SchedulerFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"job":"cleanup-expired"}'
+        RetryPolicy: { MaximumRetryAttempts: 0 }
+
+  RequeueStuckSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${AWS::StackName}-requeue-stuck"
+      ScheduleExpression: "cron(*/5 * * * ? *)"
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt SchedulerFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"job":"requeue-stuck"}'
+        RetryPolicy: { MaximumRetryAttempts: 0 }
+
+  DailyStatsSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${AWS::StackName}-daily-stats"
+      ScheduleExpression: "cron(5 0 * * ? *)"
+      FlexibleTimeWindow: { Mode: "OFF" }
+      Target:
+        Arn: !GetAtt SchedulerFunction.Arn
+        RoleArn: !GetAtt SchedulerInvokeRole.Arn
+        Input: '{"job":"daily-stats"}'
+        RetryPolicy: { MaximumRetryAttempts: 0 }
+
+  # ---- CDN -----------------------------------------------------------------------------------------------------
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-site"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Static site: maps the single page app and prerendered routes to files (D88), as the other adapters do.
+  SiteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-site"
+      AutoPublish: true
+      FunctionConfig: { Comment: "hostmark static routes", Runtime: cloudfront-js-2.0 }
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+          var path = uri.length > 1 && uri.charAt(uri.length - 1) === '/' ? uri.slice(0, -1) : uri;
+          if (path === '/login' || path === '/signup' || path === '/app' || path.indexOf('/app/') === 0) {
+            request.uri = '/app/index.html';
+          } else if (path === '/') {
+            request.uri = '/index.html';
+          } else if (path.lastIndexOf('.') < path.lastIndexOf('/')) {
+            request.uri = path + '/index.html';
+          }
+          return request;
+        }
+
+  # Dynamic paths: the address CloudFront saw, in a header it overwrites on every request (D80).
+  ClientIpFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-client-ip"
+      AutoPublish: true
+      FunctionConfig: { Comment: "hostmark client address header", Runtime: cloudfront-js-2.0 }
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          request.headers['x-hostmark-client-ip'] = { value: event.viewer.ip };
+          return request;
+        }
+
+  # /media and /f are cached for as long as the origin's Cache-Control says (D6, D82); the key has no header, cookie or
+  # query string, so one object serves everyone.
+  MediaCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-media"
+        MinTTL: 0
+        DefaultTTL: 0
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          HeadersConfig: { HeaderBehavior: none }
+          CookiesConfig: { CookieBehavior: none }
+          QueryStringsConfig: { QueryStringBehavior: none }
+
+  # The static site follows the Cache-Control that the upload sets (immutable assets, five minutes for the rest).
+  SiteCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-site"
+        MinTTL: 0
+        DefaultTTL: 300
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          HeadersConfig: { HeaderBehavior: none }
+          CookiesConfig: { CookieBehavior: none }
+          QueryStringsConfig: { QueryStringBehavior: none }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${AWS::StackName} hostmark"
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: !Ref PriceClass
+        Origins:
+          - Id: site
+            DomainName: !GetAtt Bucket.RegionalDomainName
+            OriginPath: /site
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+          - Id: api
+            # The function URL is https://<id>.lambda-url.<region>.on.aws/; the origin is its host name.
+            DomainName: !Select [2, !Split ["/", !GetAtt ApiUrl.FunctionUrl]]
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+              # The SSE stream sends an event every second; Lambda ends it after 60 s (D20).
+              OriginReadTimeout: 60
+            OriginCustomHeaders:
+              - { HeaderName: x-hostmark-origin-secret, HeaderValue: !Ref OriginSecret }
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachePolicyId: !Ref SiteCachePolicy
+          Compress: true
+          FunctionAssociations:
+            - { EventType: viewer-request, FunctionARN: !GetAtt SiteFunction.FunctionARN }
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            # Managed CachingDisabled and AllViewerExceptHostHeader (the function URL needs its own Host).
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            # No compression: it would buffer the text/event-stream response.
+            Compress: false
+            FunctionAssociations:
+              - { EventType: viewer-request, FunctionARN: !GetAtt ClientIpFunction.FunctionARN }
+          - PathPattern: /media/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachePolicyId: !Ref MediaCachePolicy
+            Compress: true
+          - PathPattern: /f/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachePolicyId: !Ref MediaCachePolicy
+            Compress: true
+
+Outputs:
+  DistributionId: { Value: !Ref Distribution }
+  DistributionDomain: { Value: !GetAtt Distribution.DomainName }
+  BucketName: { Value: !Ref Bucket }
+  QueueUrl: { Value: !Ref JobQueue }
+  DeadLetterQueueUrl: { Value: !Ref DeadLetterQueue }
+  ApiFunctionUrl: { Value: !GetAtt ApiUrl.FunctionUrl }

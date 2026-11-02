@@ -1,0 +1,16 @@
+# TLS terminates here (automatic certificates). The api and MinIO publish no port: Caddy is the only way in, which
+# is what makes X-Client-Ip trustworthy.
+{$APP_DOMAIN} {
+	reverse_proxy api:8080 {
+		# header_up without a prefix replaces whatever the client sent. {remote_host} is the TCP peer (IP only).
+		# Behind Cloudflare the peer is Cloudflare: set the value to {http.request.header.CF-Connecting-IP}
+		# instead, and only then (README, "Cloudflare in front").
+		header_up X-Client-Ip {remote_host}
+	}
+}
+
+# Presigned upload and download URLs point here (S3_PUBLIC_ENDPOINT). The Host header reaches MinIO unchanged,
+# which the signature needs.
+{$S3_DOMAIN} {
+	reverse_proxy minio:9000
+}

@@ -1,0 +1,171 @@
+name: hostmark-vps
+
+# Postgres is not part of this stack: the portable variants share one Neon database (D71). MinIO can be swapped for
+# Cloudflare R2 by pointing the S3_* variables at it and deleting the minio services (README).
+x-app-env: &app-env
+  DATABASE_URL: ${DATABASE_URL:?set it in .env}
+  REDIS_URL: redis://redis:6379
+  S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+  S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-https://${S3_DOMAIN:?}}
+  S3_BUCKET: ${S3_BUCKET:?}
+  S3_REGION: us-east-1
+  S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+  S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+  OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
+  ENVIRONMENT: production
+  WORKER_CONCURRENCY: "1"
+
+x-app: &app
+  image: hostmark-vps:${APP_VERSION:-dev}
+  pull_policy: build
+  build:
+    context: ../..
+    dockerfile: adapters/vps/Dockerfile
+    args:
+      APP_VERSION: ${APP_VERSION:-dev}
+      # RUM attributes of the web build (D85); closed lists in packages/contract.
+      HOSTMARK_PLATFORM: vps
+      HOSTMARK_VARIANT: ${HOSTMARK_VARIANT:-portable}
+      HOSTMARK_TOPOLOGY: ${HOSTMARK_TOPOLOGY:-single}
+      HOSTMARK_REGION: ${HOSTMARK_REGION:-frankfurt}
+  environment: *app-env
+
+services:
+  caddy:
+    restart: unless-stopped
+    image: caddy:2.10-alpine
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set it in .env}
+      S3_DOMAIN: ${S3_DOMAIN:?set it in .env}
+    ports:
+      - 80:80
+      - 443:443
+      - 443:443/udp
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
+  redis:
+    restart: unless-stopped
+    image: redis:7.4.8-alpine
+    # AOF keeps queued jobs across a container restart. No published port.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    restart: unless-stopped
+    image: cgr.dev/chainguard/minio@sha256:3b6e40c30ecd5cea627e382ff0b82ca841f58c52294578787043ee80c8ef7c82
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      # MinIO has no per-bucket CORS API (501); this server-wide setting lets browsers PUT and GET.
+      MINIO_API_CORS_ALLOW_ORIGIN: ${PUBLIC_URL:?}
+    volumes:
+      - minio-data:/data
+
+  # Bucket, D74 lifecycle rule (originals/ and variants/ expire after 8 days) and CORS. Idempotent.
+  minio-init:
+    <<: *app
+    command: ["node", "dist/init-bucket.js"]
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+
+  migrate:
+    <<: *app
+    command: ["node", "dist/migrate.js"]
+    restart: "no"
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+  seed:
+    <<: *app
+    command: ["node", "dist/seed.js"]
+    restart: "no"
+    environment:
+      <<: *app-env
+      SEED_API_KEY: ${SEED_API_KEY:?}
+      SEED_ADMIN_API_KEY: ${SEED_ADMIN_API_KEY:?}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  api:
+    <<: *app
+    command: ["node", "--enable-source-maps", "dist/api.js"]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      PORT: "8080"
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?}
+      PUBLIC_URL: ${PUBLIC_URL:?}
+      AUTH_SIGNUP_ENABLED: ${AUTH_SIGNUP_ENABLED:-true}
+      HOSTMARK_TOPOLOGY: ${HOSTMARK_TOPOLOGY:-single}
+      HOSTMARK_REGION: ${HOSTMARK_REGION:-frankfurt}
+    # No ports: only Caddy reaches the api, so X-Client-Ip always comes from Caddy.
+    expose:
+      - "8080"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/api/health/deep').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  # One job per process (the codecs share one JS thread, D97); throughput scales with WORKER_REPLICAS.
+  worker:
+    <<: *app
+    command: ["node", "--enable-source-maps", "dist/worker.js"]
+    restart: unless-stopped
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+    # Same limits as adapters/local (D79). The sustained peak is 3.0 to 3.2 GiB per process, so a smaller limit
+    # means kernel kills and retries, not a faster run.
+    mem_limit: ${WORKER_MEM_LIMIT:-4g}
+    memswap_limit: ${WORKER_MEM_LIMIT:-4g}
+    stop_grace_period: 70s
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  # Exactly one scheduler: croner's protect works inside one process only, so a second replica runs every job twice.
+  # There is no `deploy.replicas` here on purpose; the compose test fails if one appears.
+  scheduler:
+    <<: *app
+    command: ["node", "--enable-source-maps", "dist/scheduler.js"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+volumes:
+  caddy-data:
+  caddy-config:
+  redis-data:
+  minio-data:

@@ -1,0 +1,1279 @@
+{
+  "$comment": "Subset of https://openapi.vercel.sh/vercel.json fetched 2026-11-01 (draft-04 plus numeric exclusiveMinimum). Top-level property names are complete.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "description": "Ignored. Can be set to get completions, validations and documentation in some editors.",
+      "example": ["https://openapi.vercel.sh/vercel.json"],
+      "type": "string"
+    },
+    "alias": {},
+    "build": {
+      "additionalProperties": false,
+      "description": "An object containing another object with information to be passed to the Build Process",
+      "deprecated": true,
+      "properties": {
+        "env": {
+          "additionalProperties": false,
+          "description": "An object containing the deployment's environment variable names and values to be passed to Builds. Secrets can be referenced by prefixing the value with `@`",
+          "example": {
+            "A_SECRET": "@a-secret"
+          },
+          "deprecated": true,
+          "maxProperties": 1000,
+          "minProperties": 0,
+          "patternProperties": {
+            ".+": {
+              "maxLength": 65536,
+              "minLength": 0,
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "builds": {},
+    "skipMiddlewareRequestBody": {},
+    "cleanUrls": {},
+    "env": {},
+    "passiveRegions": {},
+    "functionFailoverRegions": {},
+    "functions": {
+      "additionalProperties": false,
+      "description": "An object describing custom options for your Serverless Functions. Each key must be glob pattern that matches the paths of the Serverless Functions you would like to customize (like `api/*.js` or `api/test.js`).",
+      "example": {
+        "src/pages/**": {
+          "maxDuration": 6,
+          "memory": 1024
+        }
+      },
+      "maxProperties": 50,
+      "minProperties": 1,
+      "patternProperties": {
+        "^.{1,256}$": {
+          "additionalProperties": false,
+          "properties": {
+            "excludeFiles": {
+              "description": "A glob pattern to match files that should be excluded from your Serverless Function. If you\u2019re using a Community Runtime, the behavior might vary.",
+              "maxLength": 256,
+              "type": "string"
+            },
+            "includeFiles": {
+              "description": "A glob pattern to match files that should be included in your Serverless Function. If you\u2019re using a Community Runtime, the behavior might vary.",
+              "maxLength": 256,
+              "type": "string"
+            },
+            "installCommand": {
+              "description": "The command used to install dependencies for this Serverless Function instead of the default install. An empty string skips the install. Only supported by the Node.js runtime.",
+              "maxLength": 256,
+              "type": "string"
+            },
+            "maxDuration": {
+              "description": "How long your Serverless Function should be allowed to run on every request in seconds (between 1 and the maximum limit of your plan), or \"max\" to use the maximum allowed by your plan.",
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 3600
+                },
+                {
+                  "type": "string",
+                  "enum": ["max"]
+                }
+              ]
+            },
+            "affinity": {
+              "description": "Controls how requests are assigned to instances of this Serverless Function.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode"],
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": ["strict"]
+                }
+              }
+            },
+            "maxConcurrency": {
+              "description": "The maximum number of requests that one instance of your Serverless Function can process concurrently.",
+              "minimum": 1,
+              "maximum": 8192,
+              "type": "integer"
+            },
+            "memory": {
+              "description": "An integer defining the memory your Serverless Function should be provided with (between 128 and 10240).",
+              "maximum": 10240,
+              "minimum": 128,
+              "type": "number"
+            },
+            "runtime": {
+              "description": "The npm package name of a Runtime, including its version",
+              "maxLength": 256,
+              "type": "string"
+            },
+            "regions": {
+              "description": "An array of regions this Serverless Function should be deployed to.",
+              "items": {
+                "maxLength": 256,
+                "type": "string"
+              },
+              "maxItems": 1000,
+              "minItems": 1,
+              "type": "array"
+            },
+            "functionFailoverRegions": {
+              "description": "An array of passive regions this Serverless Function can fail over to during a lambda outage.",
+              "items": {
+                "maxLength": 256,
+                "type": "string"
+              },
+              "maxItems": 4,
+              "minItems": 0,
+              "type": "array"
+            },
+            "supportsCancellation": {
+              "description": "A boolean that defines whether the Function supports cancellation (default: false)",
+              "type": "boolean"
+            },
+            "experimentalTriggers": {
+              "description": "An array of experimental triggers for this Serverless Function. Supports queue and schedule triggers.",
+              "type": "array",
+              "maxItems": 10,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": ["type", "topic", "consumer"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "type": {
+                        "description": "Event type pattern this trigger handles",
+                        "type": "string",
+                        "const": "queue/v1beta"
+                      },
+                      "topic": {
+                        "description": "Name of the queue topic to consume from",
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "consumer": {
+                        "description": "Name of the consumer group for this trigger",
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "maxDeliveries": {
+                        "description": "Maximum number of delivery attempts",
+                        "type": "number",
+                        "minimum": 1,
+                        "maximum": 64
+                      },
+                      "retryAfterSeconds": {
+                        "description": "Delay in seconds before retrying failed executions",
+                        "type": "number",
+                        "minimum": 5,
+                        "maximum": 86400
+                      },
+                      "initialDelaySeconds": {
+                        "description": "Initial delay in seconds before first execution attempt",
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 86400
+                      },
+                      "maxConcurrency": {
+                        "description": "Maximum number of concurrent executions for this consumer",
+                        "type": "number",
+                        "minimum": 1,
+                        "maximum": 100
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": ["type", "topic"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "type": {
+                        "description": "Event type pattern this trigger handles",
+                        "type": "string",
+                        "const": "queue/v2beta"
+                      },
+                      "topic": {
+                        "description": "Name of the queue topic to consume from",
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "maxDeliveries": {
+                        "description": "Maximum number of delivery attempts",
+                        "type": "number",
+                        "minimum": 1,
+                        "maximum": 1048576
+                      },
+                      "retryAfterSeconds": {
+                        "description": "Delay in seconds before retrying failed executions",
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 86400
+                      },
+                      "initialDelaySeconds": {
+                        "description": "Initial delay in seconds before first execution attempt",
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 86400
+                      },
+                      "maxConcurrency": {
+                        "description": "Maximum number of concurrent executions for this consumer",
+                        "type": "number",
+                        "minimum": 1,
+                        "maximum": 16384
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": ["type"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "type": {
+                        "description": "Event type pattern this trigger handles",
+                        "type": "string",
+                        "const": "schedule/v1beta"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "git": {},
+    "github": {},
+    "headers": {
+      "type": "array",
+      "maxItems": 2048,
+      "description": "A list of header definitions.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "headers"],
+        "properties": {
+          "source": {
+            "description": "A pattern that matches each incoming pathname (excluding querystring)",
+            "type": "string",
+            "maxLength": 4096
+          },
+          "headers": {
+            "description": "An array of key/value pairs representing each response header.",
+            "type": "array",
+            "maxItems": 1024,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["key", "value"],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "maxLength": 4096
+                },
+                "value": {
+                  "type": "string",
+                  "maxLength": 32768
+                }
+              }
+            }
+          },
+          "has": {
+            "description": "An array of requirements that are needed to match",
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type", "value"],
+                  "properties": {
+                    "type": {
+                      "description": "The type of request element to check",
+                      "type": "string",
+                      "enum": ["host"]
+                    },
+                    "value": {
+                      "description": "A value to match against. Can be a string (regex) or a condition operation object",
+                      "anyOf": [
+                        {
+                          "description": "A regular expression used to match thev value. Named groups can be used in the destination.",
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        {
+                          "description": "A condition operation object",
+                          "type": "object",
+                          "additionalProperties": false,
+                          "minProperties": 1,
+                          "properties": {
+                            "eq": {
+                              "description": "Equal to",
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ]
+                            },
+                            "neq": {
+                              "description": "Not equal",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "inc": {
+                              "description": "In array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "ninc": {
+                              "description": "Not in array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "pre": {
+                              "description": "Starts with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "suf": {
+                              "description": "Ends with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "re": {
+                              "description": "Regex",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "gt": {
+                              "description": "Greater than",
+                              "type": "number"
+                            },
+                            "gte": {
+                              "description": "Greater than or equal to",
+                              "type": "number"
+                            },
+                            "lt": {
+                              "description": "Less than",
+                              "type": "number"
+                            },
+                            "lte": {
+                              "description": "Less than or equal to",
+                              "type": "number"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type", "key"],
+                  "properties": {
+                    "type": {
+                      "description": "The type of request element to check",
+                      "type": "string",
+                      "enum": ["header", "cookie", "query"]
+                    },
+                    "key": {
+                      "description": "The name of the element contained in the particular type",
+                      "type": "string",
+                      "maxLength": 4096
+                    },
+                    "value": {
+                      "description": "A value to match against. Can be a string (regex) or a condition operation object",
+                      "anyOf": [
+                        {
+                          "description": "A regular expression used to match thev value. Named groups can be used in the destination.",
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        {
+                          "description": "A condition operation object",
+                          "type": "object",
+                          "additionalProperties": false,
+                          "minProperties": 1,
+                          "properties": {
+                            "eq": {
+                              "description": "Equal to",
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ]
+                            },
+                            "neq": {
+                              "description": "Not equal",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "inc": {
+                              "description": "In array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "ninc": {
+                              "description": "Not in array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "pre": {
+                              "description": "Starts with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "suf": {
+                              "description": "Ends with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "re": {
+                              "description": "Regex",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "gt": {
+                              "description": "Greater than",
+                              "type": "number"
+                            },
+                            "gte": {
+                              "description": "Greater than or equal to",
+                              "type": "number"
+                            },
+                            "lt": {
+                              "description": "Less than",
+                              "type": "number"
+                            },
+                            "lte": {
+                              "description": "Less than or equal to",
+                              "type": "number"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "missing": {
+            "description": "An array of requirements that are needed to match",
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type", "value"],
+                  "properties": {
+                    "type": {
+                      "description": "The type of request element to check",
+                      "type": "string",
+                      "enum": ["host"]
+                    },
+                    "value": {
+                      "description": "A value to match against. Can be a string (regex) or a condition operation object",
+                      "anyOf": [
+                        {
+                          "description": "A regular expression used to match thev value. Named groups can be used in the destination.",
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        {
+                          "description": "A condition operation object",
+                          "type": "object",
+                          "additionalProperties": false,
+                          "minProperties": 1,
+                          "properties": {
+                            "eq": {
+                              "description": "Equal to",
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ]
+                            },
+                            "neq": {
+                              "description": "Not equal",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "inc": {
+                              "description": "In array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "ninc": {
+                              "description": "Not in array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "pre": {
+                              "description": "Starts with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "suf": {
+                              "description": "Ends with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "re": {
+                              "description": "Regex",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "gt": {
+                              "description": "Greater than",
+                              "type": "number"
+                            },
+                            "gte": {
+                              "description": "Greater than or equal to",
+                              "type": "number"
+                            },
+                            "lt": {
+                              "description": "Less than",
+                              "type": "number"
+                            },
+                            "lte": {
+                              "description": "Less than or equal to",
+                              "type": "number"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type", "key"],
+                  "properties": {
+                    "type": {
+                      "description": "The type of request element to check",
+                      "type": "string",
+                      "enum": ["header", "cookie", "query"]
+                    },
+                    "key": {
+                      "description": "The name of the element contained in the particular type",
+                      "type": "string",
+                      "maxLength": 4096
+                    },
+                    "value": {
+                      "description": "A value to match against. Can be a string (regex) or a condition operation object",
+                      "anyOf": [
+                        {
+                          "description": "A regular expression used to match thev value. Named groups can be used in the destination.",
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        {
+                          "description": "A condition operation object",
+                          "type": "object",
+                          "additionalProperties": false,
+                          "minProperties": 1,
+                          "properties": {
+                            "eq": {
+                              "description": "Equal to",
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ]
+                            },
+                            "neq": {
+                              "description": "Not equal",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "inc": {
+                              "description": "In array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "ninc": {
+                              "description": "Not in array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "pre": {
+                              "description": "Starts with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "suf": {
+                              "description": "Ends with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "re": {
+                              "description": "Regex",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "gt": {
+                              "description": "Greater than",
+                              "type": "number"
+                            },
+                            "gte": {
+                              "description": "Greater than or equal to",
+                              "type": "number"
+                            },
+                            "lt": {
+                              "description": "Less than",
+                              "type": "number"
+                            },
+                            "lte": {
+                              "description": "Less than or equal to",
+                              "type": "number"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "images": {},
+    "name": {},
+    "redirects": {},
+    "bulkRedirectsPath": {},
+    "regions": {},
+    "rewrites": {
+      "type": "array",
+      "maxItems": 2048,
+      "description": "A list of rewrite definitions.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "destination"],
+        "properties": {
+          "source": {
+            "description": "A pattern that matches each incoming pathname (excluding querystring).",
+            "type": "string",
+            "maxLength": 4096
+          },
+          "destination": {
+            "description": "An absolute pathname to an existing resource, an external URL, or a service-targeted destination object.",
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096
+              },
+              {
+                "description": "A service-targeted destination that delegates routing into a named service from `services`. Identified by the presence of `service`.",
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["service"],
+                "properties": {
+                  "type": {
+                    "description": "Optional explicit format marker. The destination shape is identified by the `service` property, so `type` is no longer required. When present it must be `service`.",
+                    "type": "string",
+                    "enum": ["service"]
+                  },
+                  "service": {
+                    "description": "A service name identifier.",
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[a-zA-Z]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$"
+                  },
+                  "path": {
+                    "description": "Routing-only path used to select a route inside the target service. It does not mutate the URL observed by user code.",
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                }
+              }
+            ]
+          },
+          "transforms": {
+            "description": "A list of request path transforms using path-to-regexp parameters.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "op", "args"],
+              "properties": {
+                "type": {
+                  "description": "The request path to expose to the target runtime",
+                  "type": "string",
+                  "enum": ["request.path"]
+                },
+                "op": {
+                  "description": "Replace the runtime-visible request path",
+                  "type": "string",
+                  "enum": ["set"]
+                },
+                "args": {
+                  "description": "An origin-form request path. Route parameters use path-to-regexp syntax such as `/:path*`.",
+                  "type": "string",
+                  "maxLength": 2048,
+                  "pattern": "^/(?!/)(?!.*[?#\\s\\x00-\\x1F\\x7F]).*$"
+                },
+                "env": {
+                  "description": "An array of environment variable names that should be replaced at runtime in the args value",
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 64,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 256
+                  }
+                }
+              }
+            }
+          },
+          "has": {
+            "description": "An array of requirements that are needed to match",
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type", "value"],
+                  "properties": {
+                    "type": {
+                      "description": "The type of request element to check",
+                      "type": "string",
+                      "enum": ["host"]
+                    },
+                    "value": {
+                      "description": "A value to match against. Can be a string (regex) or a condition operation object",
+                      "anyOf": [
+                        {
+                          "description": "A regular expression used to match thev value. Named groups can be used in the destination.",
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        {
+                          "description": "A condition operation object",
+                          "type": "object",
+                          "additionalProperties": false,
+                          "minProperties": 1,
+                          "properties": {
+                            "eq": {
+                              "description": "Equal to",
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ]
+                            },
+                            "neq": {
+                              "description": "Not equal",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "inc": {
+                              "description": "In array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "ninc": {
+                              "description": "Not in array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "pre": {
+                              "description": "Starts with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "suf": {
+                              "description": "Ends with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "re": {
+                              "description": "Regex",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "gt": {
+                              "description": "Greater than",
+                              "type": "number"
+                            },
+                            "gte": {
+                              "description": "Greater than or equal to",
+                              "type": "number"
+                            },
+                            "lt": {
+                              "description": "Less than",
+                              "type": "number"
+                            },
+                            "lte": {
+                              "description": "Less than or equal to",
+                              "type": "number"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type", "key"],
+                  "properties": {
+                    "type": {
+                      "description": "The type of request element to check",
+                      "type": "string",
+                      "enum": ["header", "cookie", "query"]
+                    },
+                    "key": {
+                      "description": "The name of the element contained in the particular type",
+                      "type": "string",
+                      "maxLength": 4096
+                    },
+                    "value": {
+                      "description": "A value to match against. Can be a string (regex) or a condition operation object",
+                      "anyOf": [
+                        {
+                          "description": "A regular expression used to match thev value. Named groups can be used in the destination.",
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        {
+                          "description": "A condition operation object",
+                          "type": "object",
+                          "additionalProperties": false,
+                          "minProperties": 1,
+                          "properties": {
+                            "eq": {
+                              "description": "Equal to",
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ]
+                            },
+                            "neq": {
+                              "description": "Not equal",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "inc": {
+                              "description": "In array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "ninc": {
+                              "description": "Not in array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "pre": {
+                              "description": "Starts with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "suf": {
+                              "description": "Ends with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "re": {
+                              "description": "Regex",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "gt": {
+                              "description": "Greater than",
+                              "type": "number"
+                            },
+                            "gte": {
+                              "description": "Greater than or equal to",
+                              "type": "number"
+                            },
+                            "lt": {
+                              "description": "Less than",
+                              "type": "number"
+                            },
+                            "lte": {
+                              "description": "Less than or equal to",
+                              "type": "number"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "missing": {
+            "description": "An array of requirements that are needed to match",
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type", "value"],
+                  "properties": {
+                    "type": {
+                      "description": "The type of request element to check",
+                      "type": "string",
+                      "enum": ["host"]
+                    },
+                    "value": {
+                      "description": "A value to match against. Can be a string (regex) or a condition operation object",
+                      "anyOf": [
+                        {
+                          "description": "A regular expression used to match thev value. Named groups can be used in the destination.",
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        {
+                          "description": "A condition operation object",
+                          "type": "object",
+                          "additionalProperties": false,
+                          "minProperties": 1,
+                          "properties": {
+                            "eq": {
+                              "description": "Equal to",
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ]
+                            },
+                            "neq": {
+                              "description": "Not equal",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "inc": {
+                              "description": "In array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "ninc": {
+                              "description": "Not in array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "pre": {
+                              "description": "Starts with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "suf": {
+                              "description": "Ends with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "re": {
+                              "description": "Regex",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "gt": {
+                              "description": "Greater than",
+                              "type": "number"
+                            },
+                            "gte": {
+                              "description": "Greater than or equal to",
+                              "type": "number"
+                            },
+                            "lt": {
+                              "description": "Less than",
+                              "type": "number"
+                            },
+                            "lte": {
+                              "description": "Less than or equal to",
+                              "type": "number"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type", "key"],
+                  "properties": {
+                    "type": {
+                      "description": "The type of request element to check",
+                      "type": "string",
+                      "enum": ["header", "cookie", "query"]
+                    },
+                    "key": {
+                      "description": "The name of the element contained in the particular type",
+                      "type": "string",
+                      "maxLength": 4096
+                    },
+                    "value": {
+                      "description": "A value to match against. Can be a string (regex) or a condition operation object",
+                      "anyOf": [
+                        {
+                          "description": "A regular expression used to match thev value. Named groups can be used in the destination.",
+                          "type": "string",
+                          "maxLength": 4096
+                        },
+                        {
+                          "description": "A condition operation object",
+                          "type": "object",
+                          "additionalProperties": false,
+                          "minProperties": 1,
+                          "properties": {
+                            "eq": {
+                              "description": "Equal to",
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ]
+                            },
+                            "neq": {
+                              "description": "Not equal",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "inc": {
+                              "description": "In array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "ninc": {
+                              "description": "Not in array",
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "maxLength": 4096
+                              }
+                            },
+                            "pre": {
+                              "description": "Starts with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "suf": {
+                              "description": "Ends with",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "re": {
+                              "description": "Regex",
+                              "type": "string",
+                              "maxLength": 4096
+                            },
+                            "gt": {
+                              "description": "Greater than",
+                              "type": "number"
+                            },
+                            "gte": {
+                              "description": "Greater than or equal to",
+                              "type": "number"
+                            },
+                            "lt": {
+                              "description": "Less than",
+                              "type": "number"
+                            },
+                            "lte": {
+                              "description": "Less than or equal to",
+                              "type": "number"
+                            }
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "statusCode": {
+            "description": "An optional integer to override the status code of the response.",
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 999
+          },
+          "env": {
+            "description": "An array of environment variable names that should be replaced at runtime in the destination",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 256
+            }
+          },
+          "respectOriginCacheControl": {
+            "description": "When set to true (default), external rewrites will respect the Cache-Control header from the origin. When false, caching is disabled for this rewrite.",
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "routes": {},
+    "scope": {},
+    "trailingSlash": {},
+    "version": {},
+    "wildcard": {},
+    "buildCommand": {
+      "description": "The build command for this project. When `null` is used this value will be automatically detected",
+      "maxLength": 256,
+      "type": ["string", "null"]
+    },
+    "ignoreCommand": {},
+    "devCommand": {},
+    "framework": {},
+    "installCommand": {
+      "description": "The install command for this project. When `null` is used this value will be automatically detected",
+      "maxLength": 256,
+      "type": ["string", "null"]
+    },
+    "outputDirectory": {
+      "description": "The output directory of the project. When `null` is used this value will be automatically detected",
+      "maxLength": 256,
+      "type": ["string", "null"]
+    },
+    "crons": {
+      "description": "An array of cron jobs that should be created for production Deployments.",
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": ["schedule", "path"],
+        "properties": {
+          "schedule": {
+            "type": "string",
+            "minLength": 9,
+            "maxLength": 256
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 512,
+            "pattern": "^/.*"
+          }
+        }
+      }
+    },
+    "schedules": {},
+    "relatedProjects": {},
+    "fluid": {},
+    "bunVersion": {},
+    "proxy": {},
+    "experimentalAtproto": {},
+    "manualProvisioning": {},
+    "experimentalBYOC": {},
+    "experimentalEnvironmentVariables": {},
+    "ci": {},
+    "experimentalServices": {},
+    "experimentalServiceGroups": {},
+    "services": {},
+    "experimentalServicesV2": {},
+    "daemons": {}
+  }
+}

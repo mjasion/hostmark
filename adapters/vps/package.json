@@ -1,0 +1,23 @@
+{
+  "name": "@hostmark/adapter-vps",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node build.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@jsquash/jpeg": "1.6.0",
+    "@jsquash/png": "3.1.1",
+    "@jsquash/resize": "2.1.1",
+    "@jsquash/webp": "1.5.0"
+  },
+  "devDependencies": {
+    "@hostmark/contract": "workspace:*",
+    "@hostmark/node-runtime": "workspace:*",
+    "yaml": "2.9.1"
+  }
+}
