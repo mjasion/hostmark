@@ -1,0 +1,39 @@
+{
+  "name": "@hostmark/adapter-cloudflare",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node scripts/build.mjs",
+    "licenses": "node scripts/licenses.mjs",
+    "check": "node --import tsx scripts/check-config.ts",
+    "measure:pixels": "node --import tsx scripts/measure-pixels-fixtures.ts .build/measure/jpegs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@jsquash/jpeg": "1.6.0",
+    "@jsquash/png": "3.1.1",
+    "@jsquash/resize": "2.1.1",
+    "@jsquash/webp": "1.5.0",
+    "aws4fetch": "1.0.20",
+    "hono": "4.13.14",
+    "postgres": "4.0.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261101.1",
+    "@hostmark/auth": "workspace:*",
+    "@hostmark/contract": "workspace:*",
+    "@hostmark/core": "workspace:*",
+    "@hostmark/db": "workspace:*",
+    "@hostmark/image": "workspace:*",
+    "@hostmark/storage-s3": "workspace:*",
+    "@hostmark/telemetry": "workspace:*",
+    "esbuild": "0.28.2",
+    "miniflare": "4.20260730.0",
+    "tsx": "4.23.15",
+    "wrangler": "4.156.0"
+  }
+}

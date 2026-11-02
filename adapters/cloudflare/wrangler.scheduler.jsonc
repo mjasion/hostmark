@@ -1,0 +1,33 @@
+// Cron triggers for the three scheduler jobs (D19). The cron strings are SCHEDULER_JOBS from packages/contract;
+// `pnpm check` compares them.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hostmark-scheduler",
+  "main": "src/scheduler.ts",
+  "compatibility_date": "2026-08-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["*/15 * * * *", "*/5 * * * *", "5 0 * * *"] },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "APP_VERSION": "dev",
+    "PUBLIC_URL": "https://hostmark.example.com",
+    "AUTH_TRUSTED_ORIGINS": "",
+    "AUTH_SIGNUP_ENABLED": "true",
+    "HOSTMARK_TOPOLOGY": "multi",
+    "R2_ACCOUNT_ID": "REPLACE_WITH_ACCOUNT_ID",
+    "R2_BUCKET_NAME": "hostmark-files"
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      // Replace with the id printed by `wrangler hyperdrive create`. The local string is for `wrangler dev` only.
+      "id": "00000000000000000000000000000000",
+      "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+    }
+  ],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "hostmark-files" }],
+  "queues": { "producers": [{ "binding": "QUEUE", "queue": "image-jobs" }] },
+  "services": [{ "binding": "MEDIA", "service": "hostmark-api", "entrypoint": "Media" }]
+}

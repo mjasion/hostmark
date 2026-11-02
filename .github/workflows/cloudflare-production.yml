@@ -1,0 +1,139 @@
+# Production deploy to Cloudflare with a gradual rollout and an automatic rollback (D140, D142, D143). Off by default:
+# it runs only when platforms.json says cloudflare is enabled AND its status is "deployed". Otherwise only the
+# secret-free `gate` job runs and every other job is skipped.
+name: cloudflare-production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+# One production rollout at a time; a second push waits instead of cancelling a rollout midway.
+concurrency:
+  group: cloudflare-production
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    # A manual run from another branch must not reach production.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      enabled: ${{ steps.gate.outputs.enabled }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            platforms.json
+            adapters/cloudflare/pipeline/gate.mjs
+          sparse-checkout-cone-mode: false
+      - id: gate
+        run: node adapters/cloudflare/pipeline/gate.mjs platforms.json --require-deployed
+
+  verify:
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: npm install --global pnpm@12.15.0
+      - run: pnpm install --frozen-lockfile
+      - run: node --test adapters/cloudflare/pipeline/test/*.test.mjs
+      - run: pnpm --filter @hostmark/adapter-cloudflare check
+      - run: pnpm --filter @hostmark/adapter-cloudflare build
+
+  deploy:
+    needs: [gate, verify]
+    if: needs.gate.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    # Soak 3 x 2 minutes for the api, the consumer's load run and the scheduler, with room for a rollback.
+    timeout-minutes: 60
+    # Restrict this environment to the main branch and add required reviewers there.
+    environment: cloudflare-production
+    permissions:
+      contents: read
+    env:
+      PIPELINE: node adapters/cloudflare/pipeline/cli.mjs
+      SHA: ${{ github.sha }}
+      PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: npm install --global pnpm@12.15.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @hostmark/adapter-cloudflare build
+      # The load scenarios read generated fixtures (images, a large file) that no other step produces. No secret
+      # in this step; it needs none.
+      - name: Generate the load fixtures
+        run: node load/tools/fixtures.mjs
+
+      # What serves 100% now. A run that fails, is cancelled or times out puts exactly these back (last step).
+      - name: Record the versions serving production
+        id: snapshot
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: $PIPELINE snapshot --config wrangler.api.jsonc --config wrangler.consumer.jsonc
+
+      # Expand-only migrations (D142): the previous version keeps serving 100% while this runs, and a rollback goes
+      # back to code that must still work on the new schema.
+      - name: Migrate the production database
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: pnpm --filter @hostmark/db run migrate
+
+      - name: Roll out the api (10%, 50%, 100%, rollback on a bad signal)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          LOAD_API_KEY: ${{ secrets.LOAD_API_KEY }}
+        run: $PIPELINE rollout --config wrangler.api.jsonc --sha "$SHA" --url "$PRODUCTION_URL" --verify S1,S2
+
+      # The consumer has no HTTP surface: its gate is the upload scenario S4, which needs it to process the queue.
+      - name: Roll out the consumer
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          LOAD_API_KEY: ${{ secrets.LOAD_API_KEY }}
+        run: $PIPELINE rollout --config wrangler.consumer.jsonc --sha "$SHA" --url "$PRODUCTION_URL" --no-probe --verify S4
+
+      # Cron triggers cannot be split by percentage. Only after the api and the consumer were promoted.
+      - name: Deploy the scheduler
+        working-directory: adapters/cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler deploy --config wrangler.scheduler.jsonc --var "APP_VERSION:$SHA"
+
+      # Runs when an earlier step failed, and also when the run was cancelled or timed out (always() is true then).
+      # Whatever the api or the consumer was split or promoted to, both go back to the versions recorded above; a
+      # Worker that already serves the recorded version is left alone. The consumer first, then the api. Skipped
+      # when nothing was recorded, because then nothing had changed yet. If this step fails too, recover by hand:
+      # README, "Manual recovery".
+      - name: Restore the previous versions
+        if: always() && job.status != 'success' && steps.snapshot.outcome == 'success'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STABLE_API: ${{ steps.snapshot.outputs.api }}
+          STABLE_CONSUMER: ${{ steps.snapshot.outputs.consumer }}
+        run: $PIPELINE restore --sha "$SHA" --config wrangler.consumer.jsonc --stable "$STABLE_CONSUMER" --config wrangler.api.jsonc --stable "$STABLE_API"

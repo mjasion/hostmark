@@ -1,0 +1,56 @@
+// The api Worker: REST API, Better Auth, SSE, /media and /f, and the static web app (D88).
+// Validated offline by `pnpm check`; deploy steps are in README.md.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hostmark-api",
+  "main": "src/api.ts",
+  "compatibility_date": "2026-08-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "observability": { "enabled": true },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "APP_VERSION": "dev",
+    "PUBLIC_URL": "https://hostmark.example.com",
+    "AUTH_TRUSTED_ORIGINS": "",
+    "AUTH_SIGNUP_ENABLED": "true",
+    "HOSTMARK_TOPOLOGY": "multi",
+    "R2_ACCOUNT_ID": "REPLACE_WITH_ACCOUNT_ID",
+    "R2_BUCKET_NAME": "hostmark-files"
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      // Replace with the id printed by `wrangler hyperdrive create`. The local string is for `wrangler dev` only.
+      "id": "00000000000000000000000000000000",
+      "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+    }
+  ],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "hostmark-files" }],
+  "queues": { "producers": [{ "binding": "QUEUE", "queue": "image-jobs" }] },
+  // Only the requests below start the Worker; every other path is a static file (D88). The shell routes are rewritten
+  // to /app/ by the Worker.
+  "assets": {
+    "directory": "./.build/assets",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "none",
+    "run_worker_first": [
+      "/api/*",
+      "/f/*",
+      "/media/*",
+      "/THIRD-PARTY-LICENSES.txt",
+      "/login",
+      "/signup",
+      "/app",
+      "/app/*"
+    ]
+  },
+  // Workers Caching holds /media and /f for the time their Cache-Control says (D6, D82). Only the Media entrypoint
+  // is cached, and only its own purge() empties the cache (D100).
+  "cache": { "enabled": false },
+  "exports": {
+    "default": { "type": "worker", "cache": { "enabled": false } },
+    "Media": { "type": "worker", "cache": { "enabled": true } }
+  }
+}

@@ -1,0 +1,159 @@
+# Per pull request preview on Cloudflare (D140, D141). Off by default: while platforms.json says
+# cloudflare.enabled=false, only the `gate` job runs. It has no secret and no environment, and every other job is
+# skipped before it can reach one. See adapters/cloudflare/pipeline/README.md.
+name: cloudflare-preview
+
+on:
+  # Never pull_request_target: that event runs with secrets on code a fork controls.
+  # Only pull requests into main. The gate reads platforms.json of the pull request's base branch, and a base can be
+  # any branch: a branch with its own platforms.json (enabled) must not switch previews on.
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions: {}
+
+# One deployment per pull request at a time. Not cancelled midway: provisioning is idempotent, but a half-killed
+# deploy is not worth the saved minutes. The cleanup workflow uses the same group, so it never overlaps a deploy.
+concurrency:
+  group: cloudflare-preview-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      enabled: ${{ steps.gate.outputs.enabled }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      # The base of the pull request, not its head: a pull request cannot switch itself on by editing the gate or
+      # platforms.json. (It can still edit this workflow file in its own branch; see "Write access" in the README.)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            platforms.json
+            adapters/cloudflare/pipeline/gate.mjs
+          sparse-checkout-cone-mode: false
+      - id: gate
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: node adapters/cloudflare/pipeline/gate.mjs platforms.json --same-repo "$HEAD_REPO" "$BASE_REPO"
+
+  preview:
+    needs: gate
+    # Only pull requests by the owner, a member or a collaborator get a preview. That also skips Dependabot and
+    # Renovate, which have no association with the repository (and Dependabot gets no Actions secrets anyway).
+    if: needs.gate.outputs.enabled == 'true' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Holds the preview-only secrets. Create it WITH required reviewers (README, "Environment cloudflare-preview"):
+    # this job deploys the pull request's own code with a Cloudflare token.
+    environment: cloudflare-preview
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      # The pipeline scripts run from the BASE checkout (trusted/) and are pointed at the pull request's tree
+      # (head/) with HOSTMARK_ROOT, so editing the scripts in a pull request does not change what they do with the
+      # secrets. What the head still controls is the code it deploys and the wrangler in its node_modules: see
+      # "What this does not protect against" in the README.
+      PIPELINE: node ${{ github.workspace }}/trusted/adapters/cloudflare/pipeline/cli.mjs
+      HOSTMARK_ROOT: ${{ github.workspace }}/head
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # No secret in the environment of the steps that run the pull request's own code (install scripts, build).
+      # Secrets exist only in the later steps, which still start the head's wrangler: that step is the part this
+      # job cannot isolate.
+      - run: npm install --global pnpm@12.15.0
+      - run: pnpm install --frozen-lockfile
+        working-directory: head
+      - run: pnpm --filter @hostmark/adapter-cloudflare build
+        working-directory: head
+
+      - name: Provision the preview resources
+        id: provision
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+          NEON_PREVIEW_PARENT_BRANCH_ID: ${{ vars.NEON_PREVIEW_PARENT_BRANCH_ID }}
+          NEON_DATABASE: ${{ vars.NEON_DATABASE }}
+          NEON_ROLE: ${{ vars.NEON_ROLE }}
+          PREVIEW_BUCKET: ${{ vars.PREVIEW_R2_BUCKET }}
+          WORKERS_SUBDOMAIN: ${{ vars.WORKERS_SUBDOMAIN }}
+        run: |
+          case "$WORKERS_SUBDOMAIN" in
+            ''|*[!a-z0-9-]*) echo "WORKERS_SUBDOMAIN is empty or not a plain DNS label" >&2; exit 1 ;;
+          esac
+          public_url="https://hostmark-api-pr-${PR_NUMBER}.${WORKERS_SUBDOMAIN}.workers.dev"
+          echo "public_url=$public_url" >> "$GITHUB_OUTPUT"
+          $PIPELINE provision --pr "$PR_NUMBER" --sha "$HEAD_SHA" --public-url "$public_url" --bucket "$PREVIEW_BUCKET"
+
+      - name: Write the preview Worker secrets
+        env:
+          PREVIEW_BETTER_AUTH_SECRET: ${{ secrets.PREVIEW_BETTER_AUTH_SECRET }}
+          PREVIEW_R2_ACCESS_KEY_ID: ${{ secrets.PREVIEW_R2_ACCESS_KEY_ID }}
+          PREVIEW_R2_SECRET_ACCESS_KEY: ${{ secrets.PREVIEW_R2_SECRET_ACCESS_KEY }}
+        run: $PIPELINE secrets-file --out "$RUNNER_TEMP/preview-secrets.json"
+
+      # The api first, then the consumer: the consumer's service binding points at the api Worker.
+      - name: Deploy the api
+        working-directory: head/adapters/cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler deploy --config "wrangler.api.pr-${PR_NUMBER}.generated.jsonc" --secrets-file "$RUNNER_TEMP/preview-secrets.json"
+      - name: Deploy the consumer
+        working-directory: head/adapters/cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm exec wrangler deploy --config "wrangler.consumer.pr-${PR_NUMBER}.generated.jsonc" --secrets-file "$RUNNER_TEMP/preview-secrets.json"
+      - name: Remove the secrets file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/preview-secrets.json"
+
+      - name: Wait for the preview to answer
+        env:
+          PUBLIC_URL: ${{ steps.provision.outputs.public_url }}
+        run: |
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if curl --silent --show-error --fail --max-time 10 "$PUBLIC_URL/api/health" > /dev/null; then exit 0; fi
+            sleep 6
+          done
+          echo "the preview did not answer 200 on /api/health" >&2
+          exit 1
+
+      - name: Comment on the pull request
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PUBLIC_URL: ${{ steps.provision.outputs.public_url }}
+          DATABASE_BRANCH: ${{ steps.provision.outputs.branch }}
+        run: $PIPELINE comment --pr "$PR_NUMBER" --status deployed --sha "$HEAD_SHA" --url "$PUBLIC_URL" --run-url "$RUN_URL" --branch "$DATABASE_BRANCH"
+      - name: Comment on the pull request about the failure
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: $PIPELINE comment --pr "$PR_NUMBER" --status failed --sha "$HEAD_SHA" --run-url "$RUN_URL"

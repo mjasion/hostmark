@@ -1,0 +1,47 @@
+// The queue consumer: decodes images in WebAssembly and writes the variants (D17, D101).
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hostmark-consumer",
+  "main": "src/consumer.ts",
+  "compatibility_date": "2026-08-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "observability": { "enabled": true },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "APP_VERSION": "dev",
+    "PUBLIC_URL": "https://hostmark.example.com",
+    "AUTH_TRUSTED_ORIGINS": "",
+    "AUTH_SIGNUP_ENABLED": "true",
+    "HOSTMARK_TOPOLOGY": "multi",
+    "R2_ACCOUNT_ID": "REPLACE_WITH_ACCOUNT_ID",
+    "R2_BUCKET_NAME": "hostmark-files"
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      // Replace with the id printed by `wrangler hyperdrive create`. The local string is for `wrangler dev` only.
+      "id": "00000000000000000000000000000000",
+      "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+    }
+  ],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "hostmark-files" }],
+  "queues": {
+    "producers": [{ "binding": "QUEUE", "queue": "image-jobs" }],
+    "consumers": [
+      {
+        "queue": "image-jobs",
+        // One job per invocation: the decode is CPU bound, and a failure then retries one message only.
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        // MAX_ATTEMPTS is 5, so four retries. The delay of each is set by the handler (BACKOFF_SECONDS, D17).
+        "max_retries": 4,
+        "retry_delay": 10,
+        "dead_letter_queue": "image-jobs-dlq"
+      }
+    ]
+  },
+  "services": [{ "binding": "MEDIA", "service": "hostmark-api", "entrypoint": "Media" }],
+  // Decoding a large image is CPU work. The default is 30 s; this is the documented maximum.
+  "limits": { "cpu_ms": 300000 }
+}

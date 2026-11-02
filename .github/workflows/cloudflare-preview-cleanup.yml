@@ -1,0 +1,86 @@
+# Removes the preview of a pull request when it is closed or merged (D140, D141). Off by default: while
+# platforms.json says cloudflare.enabled=false, only the secret-free `gate` job runs.
+name: cloudflare-preview-cleanup
+
+on:
+  # Only pull requests into main. The gate reads platforms.json of the pull request's base branch, and a base can be
+  # any branch: a branch with its own platforms.json (enabled) must not switch previews on.
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+permissions: {}
+
+# Same group as cloudflare-preview: the teardown waits for a running deploy of the same pull request.
+concurrency:
+  group: cloudflare-preview-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      enabled: ${{ steps.gate.outputs.enabled }}
+      reason: ${{ steps.gate.outputs.reason }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            platforms.json
+            adapters/cloudflare/pipeline/gate.mjs
+          sparse-checkout-cone-mode: false
+      - id: gate
+        env:
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: node adapters/cloudflare/pipeline/gate.mjs platforms.json --same-repo "$HEAD_REPO" "$BASE_REPO"
+
+  teardown:
+    needs: gate
+    # Same trusted-author rule as the preview: a pull request that never got a preview does not reach the environment.
+    if: needs.gate.outputs.enabled == 'true' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: cloudflare-preview
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PIPELINE: node adapters/cloudflare/pipeline/cli.mjs
+    steps:
+      # The pipeline scripts and wrangler configs of the BASE: closing a pull request must not run its code with
+      # the preview secrets. The generated names depend only on the pull request number. Nothing of the pull
+      # request is checked out here, so there is no head code to run in this job at all.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: npm install --global pnpm@12.15.0
+      - run: pnpm install --frozen-lockfile
+      - name: Remove the preview resources
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ vars.NEON_PROJECT_ID }}
+        run: $PIPELINE teardown --pr "$PR_NUMBER"
+      - name: Comment on the pull request
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: $PIPELINE comment --pr "$PR_NUMBER" --status closed --sha "$HEAD_SHA" --run-url "$RUN_URL"
+      - name: Comment on the pull request about the failure
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: $PIPELINE comment --pr "$PR_NUMBER" --status cleanup-failed --sha "$HEAD_SHA" --run-url "$RUN_URL"

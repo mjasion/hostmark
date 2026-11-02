@@ -1,0 +1,7 @@
+// Test only: the image processor on its own, bundled like the real Workers (static wasm imports included).
+{
+  "name": "image-service",
+  "main": "image-service.ts",
+  "compatibility_date": "2026-08-06",
+  "compatibility_flags": ["nodejs_compat"]
+}
