@@ -1,0 +1,8 @@
+{
+  "primary": "eu",
+  "regions": [
+    { "name": "eu", "label": "hostmark-eu", "location": "Frankfurt or Warsaw" },
+    { "name": "us-east", "label": "hostmark-us-east", "location": "Virginia" },
+    { "name": "ap-southeast", "label": "hostmark-ap-southeast", "location": "Singapore" }
+  ]
+}

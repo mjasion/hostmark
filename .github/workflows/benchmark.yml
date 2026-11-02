@@ -1,0 +1,230 @@
+# The benchmark (E6, D170 to D179): the k6 scenarios against the deployed platforms, from one runner per region, then
+# one merged result set and a report on the `benchmark-results` branch.
+#
+# OFF BY DEFAULT. The monthly schedule fires on its own once this file is on main, so everything depends on the `plan`
+# job: it reads platforms.json and decides, with no secret, no environment and no network, which platforms may receive
+# load. A platform needs `enabled: true` and `status: "deployed"` there. While none does, `plan` ends green with
+# count=0 and every other job is skipped; nothing below it is reached. load/BENCHMARK.md has the owner's setup.
+#
+# A dispatch from any branch other than main does nothing: `plan` is skipped, and so is everything after it, because a
+# branch carries its own platforms.json. Restrict each `bench-<platform>` environment to main as well (load/BENCHMARK.md).
+#
+# Untrusted text (dispatch inputs, repository variables) reaches shell steps only through `env:`, never inside `run:`.
+name: benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Platform names from platforms.json, comma separated, or "all" for every enabled and deployed one'
+        type: string
+        default: all
+      scenarios:
+        description: 'Scenarios such as "S1,S2,S4", or empty for the standard set. S7 and S14 run only when named here'
+        type: string
+        default: ""
+      confirm_budgets:
+        description: "Platforms whose budgets and billing alerts you have set, comma separated. Empty: S5 and S6 are not run"
+        type: string
+        default: ""
+      runner_mode:
+        description: '"regional" (self-hosted runners labelled per region) or "github-hosted" (one vantage point). Required'
+        type: string
+        required: true
+  schedule:
+    # The 1st of every month, 05:17 UTC. GitHub disables the schedules of a public repository after 60 days without
+    # repository activity; re-enable it under Actions if the benchmark stops arriving.
+    - cron: "17 5 1 * *"
+
+# One benchmark at a time: two runs measuring the same platform would load it together.
+concurrency:
+  group: benchmark
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Trigger values. A dispatch uses its inputs alone, so a blank input means "nothing": the repository variables are for
+  # the schedule only, which has no inputs. All are plain text.
+  BENCH_PLATFORMS: ${{ inputs.platforms || 'all' }}
+  BENCH_SCENARIOS: ${{ github.event_name == 'workflow_dispatch' && inputs.scenarios || github.event_name == 'schedule' && vars.BENCH_SCENARIOS || '' }}
+  BENCH_CONFIRM_BUDGETS: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm_budgets || github.event_name == 'schedule' && vars.BENCH_BUDGETS_CONFIRMED || '' }}
+  BENCH_RUNNER_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.runner_mode || github.event_name == 'schedule' && vars.BENCH_RUNNER_MODE || '' }}
+
+jobs:
+  plan:
+    name: plan (gate)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      count: ${{ steps.plan.outputs.count }}
+      core: ${{ steps.plan.outputs.core }}
+      reach: ${{ steps.plan.outputs.reach }}
+      core_count: ${{ steps.plan.outputs.core_count }}
+      reach_count: ${{ steps.plan.outputs.reach_count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # Fails (exit 1) on anything it cannot read or that asks for load on a platform that may not receive it.
+      - id: plan
+        env:
+          PLATFORMS: ${{ env.BENCH_PLATFORMS }}
+          SCENARIOS: ${{ env.BENCH_SCENARIOS }}
+          CONFIRM_BUDGETS: ${{ env.BENCH_CONFIRM_BUDGETS }}
+          RUNNER_MODE: ${{ env.BENCH_RUNNER_MODE }}
+        run: node load/tools/bench-plan.mjs --out plan.json
+      - name: Say what was decided
+        run: |
+          {
+            echo '### Benchmark plan'
+            echo
+            echo '```json'
+            cat plan.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: plan
+          path: plan.json
+          if-no-files-found: error
+
+  # S1 to S9 from the primary region. A platform's S5 and S6 are in its entry only when its budgets were confirmed.
+  core:
+    name: ${{ matrix.name }}
+    needs: plan
+    if: needs.plan.result == 'success' && needs.plan.outputs.core_count != '' && needs.plan.outputs.core_count != '0'
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
+    timeout-minutes: ${{ matrix.timeout }}
+    environment: bench-${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.plan.outputs.core) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # No credential of any platform is in scope here: dependency install scripts and the fixture generator run
+      # before the step that reads the environment's secrets.
+      - name: Install dependencies and generate the fixtures
+        run: |
+          npm install --global --prefix "$RUNNER_TEMP/pnpm" pnpm@12.15.0
+          export PATH="$RUNNER_TEMP/pnpm/bin:$PATH"
+          pnpm install --frozen-lockfile
+          node load/tools/fixtures.mjs
+      # The only step that sees the platform's credentials. It checks platforms.json and the confirmation again.
+      - name: Run scenarios
+        env:
+          BENCH_ENTRY: ${{ toJSON(matrix) }}
+          CONFIRM_BUDGETS: ${{ env.BENCH_CONFIRM_BUDGETS }}
+          HOSTMARK_BASE_URL: ${{ vars.HOSTMARK_BASE_URL }}
+          HOSTMARK_VARIANT: ${{ vars.HOSTMARK_VARIANT }}
+          HOSTMARK_PURGE_URL: ${{ vars.HOSTMARK_PURGE_URL }}
+          HOSTMARK_PURGE_METHOD: ${{ vars.HOSTMARK_PURGE_METHOD }}
+          HOSTMARK_API_KEY: ${{ secrets.HOSTMARK_API_KEY }}
+          HOSTMARK_ADMIN_API_KEY: ${{ secrets.HOSTMARK_ADMIN_API_KEY }}
+          HOSTMARK_PURGE_TOKEN: ${{ secrets.HOSTMARK_PURGE_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: node load/tools/bench-run.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: results-${{ matrix.phase }}-${{ matrix.platform }}-${{ matrix.region }}
+          path: load/results
+          if-no-files-found: ignore
+
+  # S10 to S15 from every region. After `core`, so a platform is not under two loads at once.
+  reach:
+    name: ${{ matrix.name }}
+    needs: [plan, core]
+    if: >-
+      always() && needs.plan.result == 'success' && needs.plan.outputs.reach_count != ''
+      && needs.plan.outputs.reach_count != '0' && needs.core.result != 'cancelled'
+    runs-on: ${{ fromJSON(matrix.runs_on) }}
+    timeout-minutes: ${{ matrix.timeout }}
+    environment: bench-${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.reach) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # No credential of any platform is in scope here: dependency install scripts and the fixture generator run
+      # before the step that reads the environment's secrets.
+      - name: Install dependencies and generate the fixtures
+        run: |
+          npm install --global --prefix "$RUNNER_TEMP/pnpm" pnpm@12.15.0
+          export PATH="$RUNNER_TEMP/pnpm/bin:$PATH"
+          pnpm install --frozen-lockfile
+          node load/tools/fixtures.mjs
+      - name: Run scenarios
+        env:
+          BENCH_ENTRY: ${{ toJSON(matrix) }}
+          CONFIRM_BUDGETS: ${{ env.BENCH_CONFIRM_BUDGETS }}
+          HOSTMARK_BASE_URL: ${{ vars.HOSTMARK_BASE_URL }}
+          HOSTMARK_VARIANT: ${{ vars.HOSTMARK_VARIANT }}
+          HOSTMARK_PURGE_URL: ${{ vars.HOSTMARK_PURGE_URL }}
+          HOSTMARK_PURGE_METHOD: ${{ vars.HOSTMARK_PURGE_METHOD }}
+          HOSTMARK_API_KEY: ${{ secrets.HOSTMARK_API_KEY }}
+          HOSTMARK_ADMIN_API_KEY: ${{ secrets.HOSTMARK_ADMIN_API_KEY }}
+          HOSTMARK_PURGE_TOKEN: ${{ secrets.HOSTMARK_PURGE_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: node load/tools/bench-run.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: results-${{ matrix.phase }}-${{ matrix.platform }}-${{ matrix.region }}
+          path: load/results
+          if-no-files-found: ignore
+
+  # One run record from all regions, a report, and the results branch. No platform secret in this job.
+  publish:
+    name: publish
+    needs: [plan, core, reach]
+    if: >-
+      always() && needs.plan.result == 'success' && needs.plan.outputs.count != ''
+      && needs.plan.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+      - name: Merge
+        env:
+          RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          mkdir -p artifacts
+          node load/tools/bench-merge.mjs --results artifacts --plan artifacts/plan/plan.json \
+            --id "$RUN_ID" --out run.json --source "commit=$SHA" --source "event=$EVENT" --source "run=$RUN_ID"
+          node load/tools/report.mjs run.json --out report.md --title "hostmark benchmark $RUN_ID"
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish to the results branch
+        run: node load/tools/bench-publish.mjs --run run.json --branch benchmark-results
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: run
+          path: |
+            run.json
+            report.md

@@ -57,7 +57,7 @@ S5 and S6 can cost real money on a metered platform, so they additionally need `
 and billing alerts first). The check runs in `run.mjs` before any container starts and again at k6 and Playwright
 init, so a scenario started by hand is also guarded. Only the literal loopback names (`localhost`, `127.x.y.z`,
 `::1`) count as loopback; `127.0.0.1.example.com`, `0.0.0.0` and `127.1` do not. Credentials in the URL are refused.
-`node --test load/test` covers the guard.
+`node --test load/test/*.test.mjs` covers the guard.
 
 ## Variables
 
@@ -229,9 +229,12 @@ run.mjs            entry point, guard, sidecar, observer, result merge
 lib/               k6 modules: config, guard (also used by run.mjs and the specs), params, scenario, api, upload, ...
 scenarios/         s01-health.js ... s15-purge.js
 playwright/        s10-landing.spec.ts, s13-flow.spec.ts, result.ts
-tools/             fixtures, forward, keys, observe-local, spotcheck, behaviours, tree, pause-watch
-test/              node --test: guard, params, tree, pause
+tools/             fixtures, forward, keys, observe-local, spotcheck, behaviours, tree, pause-watch,
+                   bench-* and report (the benchmark workflow, BENCHMARK.md)
+test/              node --test (glob): guard, params, tree, pause, bench-plan (the gate), bench-report, bench-publish, bench-workflow
 ```
 
-Checks: `pnpm exec biome check .`, `node --test load/test`, and
+Checks: `pnpm exec biome check .`, `node --test load/test/*.test.mjs`, and
 `node node_modules/typescript/bin/tsc -p load/playwright --noEmit` from the repository root.
+
+The benchmark workflow (all platforms, three regions, monthly) and its setup are in [BENCHMARK.md](BENCHMARK.md).

@@ -1,4 +1,4 @@
-// node --test load/test
+// node --test load/test/*.test.mjs
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { checkGuard, isLoopbackHost, parseBaseUrl, uploadUrlAllowed } from '../lib/guard.js';
