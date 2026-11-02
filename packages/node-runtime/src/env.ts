@@ -1,3 +1,4 @@
+import { refuseExampleSecret } from '@hostmark/auth';
 import { z } from 'zod';
 
 const url = z.url();
@@ -20,7 +21,8 @@ export const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(8080),
   HOST: z.string().default('0.0.0.0'),
   APP_VERSION: z.string().default('dev'),
-  ENVIRONMENT: z.string().default('local'),
+  /** D104: a forgotten variable keeps the startup checks on. Only the local adapter defaults to `local`. */
+  ENVIRONMENT: z.string().default('production'),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(1),
   /** Directory with the Vite build and prerendered pages; only the api serves it (D88). */
   WEB_DIST: z.string().default('web'),
@@ -46,9 +48,23 @@ export const envSchema = z.object({
 
 export type Env = z.infer<typeof envSchema>;
 
+/** D104: exits like a failed schema when a deployment would sign sessions with the public example value. */
+export function checkAuthSecret(env: Pick<Env, 'BETTER_AUTH_SECRET' | 'ENVIRONMENT'>): void {
+  if (!env.BETTER_AUTH_SECRET) return;
+  try {
+    refuseExampleSecret(env.BETTER_AUTH_SECRET, env.ENVIRONMENT);
+  } catch (err) {
+    console.error(`Invalid environment:\n  ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
 export function loadEnv(source: Record<string, string | undefined> = process.env): Env {
   const parsed = envSchema.safeParse(source);
-  if (parsed.success) return parsed.data;
+  if (parsed.success) {
+    checkAuthSecret(parsed.data);
+    return parsed.data;
+  }
   const lines = parsed.error.issues.map((i) => `  ${i.path.join('.') || '(root)'}: ${i.message}`);
   console.error(`Invalid environment:\n${lines.join('\n')}`);
   process.exit(1);

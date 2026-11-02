@@ -61,7 +61,9 @@ on disabled, missing, string-valued and fork inputs), `actionlint` 1.7.12 on the
   result) can use the token in the preview account. The base checkout, the author check and the `main` filter narrow
   who and what reaches the secrets; they do not make head code harmless. **The real answer is a separate Cloudflare
   account for previews** (D143), so the token can reach nothing but previews. Do not point the preview environment
-  at the production account.
+  at the production account. The steps without secrets are no boundary either: an install script of the head runs on
+  the same runner and can change what later steps execute, so treat `NEON_API_KEY`, the `PREVIEW_*` secrets and the
+  job's `pull-requests: write` token as reachable by the pull request too.
 - **Required reviewers on `cloudflare-preview` are required.** Without them every push of a trusted author deploys
   immediately. With them each run waits for an approval, which is the only point where a person looks at the head
   before it gets a token. Configure them before setting `enabled: true`.
@@ -84,7 +86,7 @@ against"). `cloudflare-production` should be limited to the `main` branch and ha
 ### Environment `cloudflare-preview`
 
 Used by `cloudflare-preview.yml` and `cloudflare-preview-cleanup.yml`. Credentials for preview resources only.
-Optional: required reviewers.
+Required reviewers are mandatory (D145).
 
 | Name                            | Kind     | Meaning                                                                                                                             |
 | ------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------- |

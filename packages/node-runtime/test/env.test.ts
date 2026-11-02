@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { envSchema } from '../src/env';
+import { EXAMPLE_AUTH_SECRET } from '@hostmark/auth';
+import { describe, expect, it, vi } from 'vitest';
+import { envSchema, loadEnv } from '../src/env';
 
 const base = {
   DATABASE_URL: 'postgres://u:p@h/db',
@@ -36,6 +37,24 @@ describe('auth environment', () => {
     expect(
       parse({ BETTER_AUTH_SECRET: 'hm_local_auth_secret_replace_me_000000000000000000000000' }).success,
     ).toBe(true);
+  });
+
+  it('refuses the example secret at startup unless ENVIRONMENT is local (D104)', () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`exit ${code}`);
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const secret = { ...base, BETTER_AUTH_SECRET: EXAMPLE_AUTH_SECRET };
+      expect(() => loadEnv(secret)).toThrow('exit 1');
+      expect(() => loadEnv({ ...secret, ENVIRONMENT: 'production' })).toThrow('exit 1');
+      expect(loadEnv({ ...secret, ENVIRONMENT: 'local' }).ENVIRONMENT).toBe('local');
+      expect(loadEnv({ ...base, BETTER_AUTH_SECRET: 'x'.repeat(32) }).ENVIRONMENT).toBe('production');
+      expect(loadEnv(base).BETTER_AUTH_SECRET).toBeUndefined();
+    } finally {
+      exit.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it('leaves the client address header unset by default', () => {

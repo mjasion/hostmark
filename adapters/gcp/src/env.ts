@@ -1,5 +1,5 @@
 import { QUEUE_NAME } from '@hostmark/contract';
-import { envSchema as nodeEnvSchema } from '@hostmark/node-runtime/env';
+import { checkAuthSecret, envSchema as nodeEnvSchema } from '@hostmark/node-runtime/env';
 import { z } from 'zod';
 
 /**
@@ -21,7 +21,10 @@ export type GcpEnv = z.infer<typeof envSchema>;
 
 export function loadGcpEnv(source: Record<string, string | undefined> = process.env): GcpEnv {
   const parsed = envSchema.safeParse(source);
-  if (parsed.success) return parsed.data;
+  if (parsed.success) {
+    checkAuthSecret(parsed.data);
+    return parsed.data;
+  }
   const lines = parsed.error.issues.map((i) => `  ${i.path.join('.') || '(root)'}: ${i.message}`);
   console.error(`Invalid environment:\n${lines.join('\n')}`);
   process.exit(1);

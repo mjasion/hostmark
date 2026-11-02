@@ -264,6 +264,9 @@ Before enabling Vercel:
 - No `regions` and no `HOSTMARK_REGION`: `/f` reports `local` and functions run away from the database. No version.
 - A purge with no request context silently does nothing and `delete_file` records it as done. The DLQ copy can be lost
   when its send fails. The killer job has no `maxDeliveries`.
+- `api/queue.ts` trusts every POST: `handleCallback` of `@vercel/queue` 0.10.0 checks no signature or token and takes the
+  job from the request body. The only protection is the documented "no public URL" of consumer functions. Prove it on
+  the first deployment: a forged `ce-type` POST to `/api/queue` must not reach the handler.
 
 Before enabling Google Cloud:
 
@@ -276,8 +279,6 @@ Before enabling Google Cloud:
 
 All platforms:
 
-- `refuseExampleSecret` runs in the Cloudflare, AWS and Vercel adapters only, although D104 and the comment say every
-  adapter calls it.
 - `/media` is immutable for a year and VPS, Fly and Railway have no purger. A CDN in front of the VPS, as the spec plans,
   keeps an unpublished file for up to a year. `packages/core/src/ports.ts` says only `local` lacks a purger.
 - The contract suite does not detect loss of renewal, ack or the failure deadline: three of five mutants passed.
