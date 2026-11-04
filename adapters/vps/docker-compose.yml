@@ -35,7 +35,7 @@ x-app: &app
 services:
   caddy:
     restart: unless-stopped
-    image: caddy:2.10-alpine
+    image: caddy:2.11-alpine
     environment:
       APP_DOMAIN: ${APP_DOMAIN:?set it in .env}
       S3_DOMAIN: ${S3_DOMAIN:?set it in .env}
