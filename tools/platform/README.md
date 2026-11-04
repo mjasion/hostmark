@@ -17,7 +17,8 @@ pnpm platform matrix [name] [--exclude <name>]   # GitHub Actions matrix of enab
 
 **Cloudflare is deployed by `.github/workflows/cloudflare-production.yml` only.** It rolls out in steps and rolls back
 by itself; `deploy.yml` leaves Cloudflare out (D123), so a `platform-deploy` script in `adapters/cloudflare` would not
-open a second route. `deploy.yml` runs from `main` only, because a branch carries its own `platforms.json`.
+open a second route. The first deploy, which the rollout cannot do because there is no Worker to roll back to, is the
+owner's `pnpm --filter @hostmark/adapter-cloudflare bootstrap` (D256). `deploy.yml` runs from `main` only, because a branch carries its own `platforms.json`.
 
 **Logins and tools in `deploy.yml`** (D241, D242): AWS and GCP log in with OIDC (`id-token: write` on the deploy
 job only); Railway CLI and flyctl are downloaded at a pinned version and checked against a pinned SHA-256; each of

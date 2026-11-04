@@ -4,11 +4,21 @@ import type { JobHandler, Queue } from '@hostmark/core/ports';
 /** Messages per `sendBatch` call on Cloudflare Queues. */
 const BATCH_LIMIT = 100;
 
-/** Producer side: a thin wrapper of the Queues binding. Messages are JSON, well below the 128 KB limit. */
+/**
+ * Producer side: a thin wrapper of the Queues binding. Messages are JSON, well below the 128 KB limit.
+ *
+ * `ping` asks the binding for the queue's realtime backlog (`metrics()`), which needs the queue to exist and be
+ * reachable and sends nothing (D253). The numbers are not used: `/api/health/deep` only reports up or down.
+ */
 export function createCloudflareQueue(
-  binding: Pick<globalThis.Queue<JobMessage>, 'send' | 'sendBatch'>,
+  binding: Pick<globalThis.Queue<JobMessage>, 'send' | 'sendBatch' | 'metrics'>,
 ): Queue {
   return {
+    async ping() {
+      const metrics = await binding.metrics();
+      if (typeof metrics?.backlogCount !== 'number')
+        throw new Error('queue.metrics() answered without a backlog count');
+    },
     async send(msg, opts) {
       await binding.send(msg, {
         contentType: 'json',

@@ -230,6 +230,7 @@ const PARAM_NAMES = [
   'LCP_P95_MS',
   'FLOW_P95_MS',
   'INP_MAX_MS',
+  'UPLOAD_FIXTURE',
 ];
 
 /** `-e NAME` without a value makes the docker client copy it from its own environment, so keys stay out of `ps`. */

@@ -74,8 +74,9 @@ on disabled, missing, string-valued and fork inputs), `actionlint` 1.7.12 on the
   they are removed by hand. The Neon branch has a 7-day `expires_at`. No sweep workflow was written.
 - **Production migrations must be expand-only.** The previous version serves 100% while the migration runs, and a
   rollback returns to it. Durable Object migrations cannot be part of a gradual deployment.
-- **The first production deploy is manual** (`wrangler deploy` by the owner, with the production secrets set by
-  `wrangler secret put`). `deployments list` fails for a Worker that does not exist and the rollout then refuses to start.
+- **The first production deploy is the owner's bootstrap** (`pnpm --filter @hostmark/adapter-cloudflare bootstrap`,
+  `scripts/bootstrap.mjs`, D256), run once from a workstation. `deployments list` fails for a Worker that does not
+  exist and the rollout then refuses to start.
 
 ## Required GitHub configuration
 
@@ -152,7 +153,8 @@ The scheduler is not previewed.
 
 On push to `main` (and manual dispatch from `main`), only if the gate says enabled **and** `status` is `deployed`:
 
-1. `verify`: pipeline tests, `pnpm --filter @hostmark/adapter-cloudflare check` and `build`, no secrets.
+1. `verify`: pipeline tests, `pnpm --filter @hostmark/adapter-cloudflare check --deploy` (which refuses the committed
+   placeholders, D255) and `build`, no secrets.
 2. `deploy`: install and build, `node load/tools/fixtures.mjs` (the load scenarios read fixtures it generates; no
    secret), then `cli.mjs snapshot`: the version serving 100% of the api and of the consumer is recorded. If it is
    unclear the job stops here, before anything changed.
@@ -166,8 +168,9 @@ On push to `main` (and manual dispatch from `main`), only if the gate says enabl
       and unpinned. A non-200 or a wrong `x-version` is an error.
    4. `wrangler versions deploy <candidate>@10 <stable>@90 --config ... --yes`, soak 2 minutes, probe, decide; then 50%,
       then 100%.
-   5. After 100%: `node load/run.mjs S1,S2 --short` (api) or `S4 --short` (consumer, `--no-probe`) with the guard
-      variables set (`BASE_URL`, `API_KEY`, `REGION=cloudflare-global`, `VARIANT=<sha>`, `LOAD_ACK_REMOTE=<host>`).
+   5. After 100%: `node load/run.mjs S1,S2 --short` (api) or `S4 --short` with `UPLOAD_FIXTURE=jpeg-tiny.jpg`
+      (consumer, `--no-probe --upload-fixture jpeg-tiny.jpg`: this variant refuses S4's 12 MP image, D103, D250;
+      `cli.mjs` refuses a verification it can never pass before anything is uploaded) with the guard variables set (`BASE_URL`, `API_KEY`, `REGION=cloudflare-global`, `VARIANT=<sha>`, `LOAD_ACK_REMOTE=<host>`).
       This needs Docker for k6, which the runner has.
 5. Scheduler: plain `wrangler deploy` (cron triggers have no percentage).
 6. Last step, `if: always() && job.status != 'success' && steps.snapshot.outcome == 'success'`: `cli.mjs restore`

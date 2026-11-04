@@ -1,4 +1,6 @@
 // S4: end-to-end upload of a 1 MB JPEG (12 MP): create, PUT to the presigned URL, complete, wait for `ready`.
+// UPLOAD_FIXTURE replaces the image for a deployment check on a variant that refuses 12 MP (D103, D250); like every
+// other parameter it makes the run "reduced", so such a run is never a benchmark result.
 import { assertAllowed, requireKey } from '../lib/config.js';
 import { loadFixture, tokenOf } from '../lib/fixtures.js';
 import { param, seconds } from '../lib/params.js';
@@ -16,7 +18,7 @@ assertAllowed('S4');
 const rate = param('RPS', 2, 1);
 const duration = param('DURATION', '5m', '30s');
 const readyP95 = latencyBound('READY_P95_MS', 20000);
-const photo = loadFixture('jpeg-1mb.jpg');
+const photo = loadFixture(param('UPLOAD_FIXTURE', 'jpeg-1mb.jpg', 'jpeg-1mb.jpg'));
 
 export const options = baseOptions({
   scenarios: {

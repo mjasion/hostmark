@@ -3,7 +3,14 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { main, previewSecrets, repositoryRoot, scrubbed } from '../cli.mjs';
+import {
+  ACCEPTED_FIXTURES,
+  main,
+  previewSecrets,
+  repositoryRoot,
+  scrubbed,
+  verificationPlan,
+} from '../cli.mjs';
 import { fakeFetch, VERSION_A, VERSION_B } from './helpers.mjs';
 
 const dir = mkdtempSync(join(tmpdir(), 'cli-'));
@@ -178,11 +185,15 @@ const stableList = JSON.stringify([
  */
 function fakeWrangler({ fail = {}, deployCode = () => 0, listing = stableList, verifyCode = 0 } = {}) {
   const calls = [];
+  const loadEnvs = [];
   let deploys = 0;
   const exec = async (args, options = {}) => {
     const line = args.join(' ');
     calls.push(line);
-    if (args[0] === 'node') return { code: verifyCode, stdout: '' };
+    if (args[0] === 'node') {
+      loadEnvs.push(options.env ?? {});
+      return { code: verifyCode, stdout: '' };
+    }
     if (args[1] === 'deployments') return { code: fail['deployments list'] ?? 0, stdout: listing };
     if (args[1] === 'versions' && args[2] === 'upload') {
       writeFileSync(
@@ -195,6 +206,7 @@ function fakeWrangler({ fail = {}, deployCode = () => 0, listing = stableList, v
     return { code: 0, stdout: '' };
   };
   exec.calls = calls;
+  exec.loadEnvs = loadEnvs;
   exec.deploys = () => calls.filter((c) => c.includes('versions deploy')).map((c) => c.split(' ')[3]);
   return exec;
 }
@@ -265,6 +277,44 @@ test('rollout with a probe: an unhealthy candidate exits 1 before any traffic mo
 test('rollout needs scenario ids to verify with', async () => {
   const exec = fakeWrangler();
   await assert.rejects(runRolloutCli(exec, ['--verify', 'rm -rf']), /scenario ids/);
+});
+
+test('the consumer gate runs S4 with an image this variant accepts, as a reduced run (D250)', async () => {
+  const exec = fakeWrangler();
+  const extra = ['--no-probe', '--verify', 'S4', '--upload-fixture', 'jpeg-tiny.jpg'];
+  assert.equal(await runRolloutCli(exec, extra), 0);
+  assert.ok(exec.calls.some((c) => c.startsWith('node load/run.mjs S4 --short')));
+  assert.equal(exec.loadEnvs.length, 1);
+  assert.equal(exec.loadEnvs[0].UPLOAD_FIXTURE, 'jpeg-tiny.jpg');
+  assert.equal(exec.loadEnvs[0].API_KEY, 'k');
+});
+
+test('a verification this variant can never pass refuses before anything is uploaded (D103, D250)', async () => {
+  for (const [extra, reason] of [
+    [['--no-probe', '--verify', 'S4'], /S4 uploads the 12 MP jpeg-1mb\.jpg.*--upload-fixture jpeg-tiny\.jpg/],
+    [['--no-probe', '--verify', 'S4', '--upload-fixture', 'jpeg-1mb.jpg'], /must be one of jpeg-tiny\.jpg/],
+    [['--no-probe', '--verify', 'S4', '--upload-fixture', '../../etc/passwd'], /must be one of/],
+    [['--verify', 'S1', '--upload-fixture', 'jpeg-tiny.jpg'], /S4 only/],
+    [['--verify', 'S1,S5'], /S5 uploads jpeg-1mb\.jpg/],
+    [['--verify', 'S9'], /S9/],
+    [['--verify', 'S12'], /S12/],
+    [['--verify', 'S13'], /S13/],
+    [['--verify', 'S15'], /S15/],
+  ]) {
+    const exec = fakeWrangler();
+    await assert.rejects(runRolloutCli(exec, extra), reason, extra.join(' '));
+    assert.deepEqual(exec.calls, [], `${extra.join(' ')}: nothing ran`);
+  }
+});
+
+test('verificationPlan passes UPLOAD_FIXTURE only with S4 and keeps the scenario order', () => {
+  assert.deepEqual(verificationPlan('S1,S2', undefined), { scenarios: ['S1', 'S2'], env: {} });
+  assert.deepEqual(verificationPlan('S1,S4', 'jpeg-tiny.jpg'), {
+    scenarios: ['S1', 'S4'],
+    env: { UPLOAD_FIXTURE: 'jpeg-tiny.jpg' },
+  });
+  assert.deepEqual(ACCEPTED_FIXTURES, ['jpeg-tiny.jpg']);
+  assert.ok(Object.isFrozen(ACCEPTED_FIXTURES));
 });
 
 test('snapshot prints the version serving each Worker and refuses an unclear state', async () => {

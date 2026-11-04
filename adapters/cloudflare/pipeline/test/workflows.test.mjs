@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { verificationPlan } from '../cli.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const WORKFLOWS = join(ROOT, '.github/workflows');
@@ -177,6 +178,28 @@ test('production: fixtures and snapshot come before the rollouts, the restore is
   assert.match(steps[restore], /STABLE_CONSUMER: \$\{\{ steps\.snapshot\.outputs\.consumer \}\}/);
   // no step after the rollouts may be able to leave the job green without the restore being considered
   assert.ok(restore > consumer);
+});
+
+test('every production rollout verifies with scenarios and a fixture this variant accepts (D103, D250)', () => {
+  const text = readFileSync(join(WORKFLOWS, 'cloudflare-production.yml'), 'utf8');
+  const rollouts = [...text.matchAll(/\$PIPELINE rollout ([^\n]+)/g)].map((m) => m[1]);
+  assert.equal(rollouts.length, 2);
+  for (const line of rollouts) {
+    const verify = /--verify (\S+)/.exec(line)?.[1];
+    const fixture = /--upload-fixture (\S+)/.exec(line)?.[1];
+    assert.ok(verify, `${line}: no --verify`);
+    // Throws for a scenario that uploads an image this variant refuses, or for S4 without the tiny fixture.
+    assert.doesNotThrow(() => verificationPlan(verify, fixture), line);
+  }
+  const consumer = rollouts.find((l) => l.includes('wrangler.consumer.jsonc'));
+  assert.match(consumer, /--no-probe --verify S4 --upload-fixture jpeg-tiny\.jpg/);
+});
+
+test('production checks the configs in deploy mode, which refuses the committed placeholders (D255)', () => {
+  const text = readFileSync(join(WORKFLOWS, 'cloudflare-production.yml'), 'utf8');
+  const verify = jobsOf(text).find((j) => j.name === 'verify');
+  assert.match(verify.text, /run: pnpm --filter @hostmark\/adapter-cloudflare check --deploy$/m);
+  assert.doesNotMatch(verify.text, /adapter-cloudflare check$/m);
 });
 
 test('production requires a deployed status and only runs from main', () => {

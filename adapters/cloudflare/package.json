@@ -7,6 +7,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "node scripts/build.mjs",
+    "bootstrap": "node scripts/bootstrap.mjs",
     "licenses": "node scripts/licenses.mjs",
     "check": "node --import tsx scripts/check-config.ts",
     "measure:pixels": "node --import tsx scripts/measure-pixels-fixtures.ts .build/measure/jpegs",

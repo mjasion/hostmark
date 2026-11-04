@@ -37,3 +37,25 @@ test('cacheState tells a miss and a dynamic response from a missing header', () 
   assert.equal(cacheState({ 'cf-cache-status': 'STALE' }), 'stale');
   assert.equal(cacheState({ 'x-cache': 'something else' }), 'bypass');
 });
+
+test('every parameter a scenario reads is passed to the k6 container by run.mjs', async () => {
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const dir = new URL('../', import.meta.url);
+  const runText = readFileSync(new URL('run.mjs', dir), 'utf8');
+  const listed = new Set(
+    /const PARAM_NAMES = \[([^\]]*)\]/
+      .exec(runText)[1]
+      .match(/'[A-Z0-9_]+'/g)
+      .map((s) => s.slice(1, -1)),
+  );
+  const sources = [
+    ...readdirSync(new URL('scenarios/', dir)).map((f) => new URL(`scenarios/${f}`, dir)),
+    ...readdirSync(new URL('lib/', dir)).map((f) => new URL(`lib/${f}`, dir)),
+  ];
+  const used = new Set();
+  for (const file of sources)
+    for (const m of readFileSync(file, 'utf8').matchAll(/\b(?:param|latencyBound)\('([A-Z0-9_]+)'/g))
+      used.add(m[1]);
+  assert.ok(used.has('UPLOAD_FIXTURE'), 'S4 reads UPLOAD_FIXTURE (D250)');
+  for (const name of used) assert.ok(listed.has(name), `${name} is read by a scenario but not passed to k6`);
+});

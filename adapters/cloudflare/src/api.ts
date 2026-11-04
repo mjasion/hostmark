@@ -1,7 +1,7 @@
 import { cache, WorkerEntrypoint } from 'cloudflare:workers';
 import { createApp } from '@hostmark/core';
 import type { Bindings } from './env';
-import { closeAfter, startupFailure } from './http';
+import { closeAfter, startupFailure, withOwnTraceId } from './http';
 import { getImageProcessor } from './images';
 import { LICENSES_PATH, licensesResponse } from './licenses';
 import { createWorkersCachePurger, type PurgeResult, type PurgeTarget, purgeCache } from './purge';
@@ -71,7 +71,7 @@ export default {
     const { Media: media } = ctx.exports as unknown as Exports;
     const url = new URL(request.url);
     if (url.pathname === LICENSES_PATH && request.method === 'GET') return licensesResponse();
-    if (isCacheable(request.method, url.pathname)) return media.fetch(request);
+    if (isCacheable(request.method, url.pathname)) return withOwnTraceId(await media.fetch(request));
     if (env.ASSETS && (request.method === 'GET' || request.method === 'HEAD') && isShellRoute(url.pathname)) {
       return env.ASSETS.fetch(new Request(new URL('/app/', url), request));
     }

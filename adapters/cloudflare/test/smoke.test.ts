@@ -159,6 +159,9 @@ describe.skipIf(!databaseUrl)(
       expect((await client.updateFile(created.fileId, { isPublic: true })).isPublic).toBe(true);
       const publicRes = await mf.dispatchFetch(`${PUBLIC_URL}/media/${created.fileId}/128.webp`);
       expect(publicRes.status).toBe(200);
+      // Through the gateway's restamp (D257): one trace id per response, also on what the cache would serve.
+      expect(publicRes.headers.get('x-trace-id')).toMatch(/^[0-9a-f]{32}$/);
+      expect(publicRes.headers.get('cache-control')).toContain('immutable');
       // The successful purge is not proven here: Miniflare cannot purge. What is proven is that the api does not
       // answer "ok" when the purge did not happen, and that the file is private anyway (a retry is safe).
       await expect(client.updateFile(created.fileId, { isPublic: false })).rejects.toMatchObject({

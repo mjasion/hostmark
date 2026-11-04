@@ -1,7 +1,7 @@
 import type { JobMessage } from '@hostmark/contract';
 import { MAX_ATTEMPTS } from '@hostmark/contract';
 import { describe, expect, it, vi } from 'vitest';
-import { CrashSignal, consumeBatch } from '../src/queue';
+import { CrashSignal, consumeBatch, createCloudflareQueue } from '../src/queue';
 
 const body = { jobId: 'job-1' } as unknown as JobMessage;
 
@@ -42,5 +42,31 @@ describe('consumeBatch', () => {
     });
     expect(last.message.retry).toHaveBeenCalledTimes(1);
     expect(last.message.ack).not.toHaveBeenCalled();
+  });
+});
+
+// The success path runs against Miniflare's queue in the contract ("pings when it can", test/queue.test.ts); these
+// are the failures, with a fake binding (D253).
+describe('createCloudflareQueue ping', () => {
+  const binding = (metrics: () => Promise<unknown>) =>
+    ({ send: vi.fn(), sendBatch: vi.fn(), metrics }) as unknown as Parameters<
+      typeof createCloudflareQueue
+    >[0];
+
+  it('asks the binding for metrics and sends nothing', async () => {
+    const b = binding(async () => ({ backlogCount: 3, backlogBytes: 120 }));
+    await expect(createCloudflareQueue(b).ping?.()).resolves.toBeUndefined();
+    expect(b.send).not.toHaveBeenCalled();
+    expect(b.sendBatch).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the binding cannot reach the queue', async () => {
+    const q = createCloudflareQueue(binding(async () => Promise.reject(new Error('Queue not found'))));
+    await expect(q.ping?.()).rejects.toThrow('Queue not found');
+  });
+
+  it('rejects an answer without a backlog count', async () => {
+    const q = createCloudflareQueue(binding(async () => ({})));
+    await expect(q.ping?.()).rejects.toThrow(/backlog count/);
   });
 });

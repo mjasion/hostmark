@@ -7,7 +7,9 @@
   "compatibility_date": "2026-08-06",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
-  "observability": { "enabled": true },
+  // Workers Logs and automatic traces (handler, fetch, bindings, service binding calls); export to an OTLP
+  // destination needs `traces.destinations` with a destination created in the dashboard (README, D254).
+  "observability": { "enabled": true, "traces": { "enabled": true } },
   "vars": {
     "ENVIRONMENT": "production",
     "APP_VERSION": "dev",
@@ -47,8 +49,10 @@
     ]
   },
   // Workers Caching holds /media and /f for the time their Cache-Control says (D6, D82). Only the Media entrypoint
-  // is cached, and only its own purge() empties the cache (D100).
-  "cache": { "enabled": false },
+  // is cached, and only its own purge() empties the cache (D100). cross_version_cache drops the Worker version from
+  // the cache key: one cache for every version, so a purge from any version (the consumer's service binding, a
+  // gradual rollout, a rollback) reaches every entry, and a deploy does not start /media cold (D252).
+  "cache": { "enabled": false, "cross_version_cache": true },
   "exports": {
     "default": { "type": "worker", "cache": { "enabled": false } },
     "Media": { "type": "worker", "cache": { "enabled": true } }
