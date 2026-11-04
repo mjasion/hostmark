@@ -9,7 +9,7 @@
 # What is not wired yet, so a dispatch for these ends in a failed job and deploys nothing:
 #   - no cloud login step and no `id-token: write`: AWS_ROLE_ARN is never assumed, GCP has no credentials
 #     (adapters/gcp/scripts/deploy.sh needs Application Default Credentials);
-#   - only adapters/aws and adapters/gcp have a `platform-deploy` script; the other adapters fail with
+#   - only adapters/aws, adapters/gcp and adapters/vercel have a `platform-deploy` script; the other adapters fail with
 #     "Missing script" until they get one.
 name: deploy
 

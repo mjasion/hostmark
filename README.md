@@ -12,6 +12,7 @@ what differ between platforms.
 - [`docs/spec.md`](docs/spec.md): full specification
 - [`docs/decisions.md`](docs/decisions.md): resolved ambiguities and deviations; takes precedence over the spec
 - [`docs/plan.md`](docs/plan.md): implementation stages
+- [`docs/status.md`](docs/status.md): current state, open work and handoff notes
 
 ## Status
 
@@ -23,7 +24,7 @@ scenarios S1 to S15 against it (`node load/run.mjs all --short`, or `S1 S4 ...` 
 The portable adapters for Cloudflare, Google Cloud, AWS, Railway, Fly.io, Vercel and a VPS, the Cloudflare pipeline and
 the benchmark workflow are written and tested offline. They are off by default and opt in through
 [`platforms.json`](platforms.json). All adapters are still `emulated`; nothing is deployed. Do not deploy publicly
-before the open items in the plan are closed. The next stages are in the plan.
+before the open items in the plan are closed. What is open is in [`docs/status.md`](docs/status.md).
 
 ## Licence
 

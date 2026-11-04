@@ -1,7 +1,8 @@
 # hostmark
 
 Reference application for benchmarking hosting platforms. Read `docs/spec.md` for what it does and
-`docs/decisions.md` for resolved ambiguities. `decisions.md` overrides the spec.
+`docs/decisions.md` for resolved ambiguities. `decisions.md` overrides the spec. `docs/status.md` says what is done
+and what is open.
 
 ## Rules
 
