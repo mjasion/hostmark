@@ -6,6 +6,7 @@
   "license": "GPL-3.0-only",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node --import tsx scripts/build.ts",
     "check": "node --import tsx scripts/check-config.ts",
     "platform-deploy": "node scripts/deploy.mjs",
     "test": "vitest run"
@@ -30,6 +31,9 @@
     "@hostmark/node-runtime": "workspace:*",
     "@hostmark/storage-s3": "workspace:*",
     "@hostmark/telemetry": "workspace:*",
+    "aws4fetch": "1.0.20",
+    "esbuild": "0.28.2",
+    "path-to-regexp": "6.3.0",
     "tsx": "4.23.15"
   }
 }

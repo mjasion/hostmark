@@ -3,7 +3,7 @@ import { describeImageProcessorContract, describeQueueContract } from '@hostmark
 import { createWasmImageProcessor } from '@hostmark/image';
 import { nodeLoader } from '@hostmark/image/node';
 import { makeJpeg } from '@hostmark/node-runtime/testing/fixtures';
-import { createMessageProcessor, createVercelQueue, deadLetterTopic } from '../src/queue';
+import { createMessageProcessor, createVercelQueue, deadLetterTopic, MAX_DELIVERIES } from '../src/queue';
 import { QueueStandIn } from './stand-in';
 
 const TOPIC = 'image-jobs';
@@ -31,7 +31,7 @@ async function until<T>(waitMs: number, fn: () => Promise<T | undefined>): Promi
 // Runs on the in-memory model of Vercel Queues (test/stand-in.ts): the service has no local stand-in without an account
 // (`vercel dev` is documented to run queues locally, not verified here). Delays are scaled to 1 % of D17.
 describeQueueContract('vercel: adapter logic on a model of Vercel Queues', async () => {
-  const platform = new QueueStandIn(0.01);
+  const platform = new QueueStandIn(0.01, MAX_DELIVERIES);
   const queue = createVercelQueue(platform, TOPIC);
   return {
     queue,
@@ -65,7 +65,10 @@ describeQueueContract('vercel: adapter logic on a model of Vercel Queues', async
               handler: async () => {
                 if (outcome === 'fail') throw new Error('job failed');
               },
-              deadLetter: async (body) => void (await platform.send(deadLetterTopic(TOPIC), body)),
+              deadLetter: async (body, _reason, messageId) =>
+                void (await platform.send(deadLetterTopic(TOPIC), body, {
+                  idempotencyKey: `dlq-${messageId}`,
+                })),
             })(payload, { messageId, deliveryCount });
           });
           if (taken) {

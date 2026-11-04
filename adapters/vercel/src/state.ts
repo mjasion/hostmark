@@ -1,21 +1,30 @@
-import { dangerouslyDeleteByTag } from '@vercel/functions';
 import { send, sendBatch } from '@vercel/queue';
+import { withBuildDefaults } from './build-info';
 import { ConfigError } from './env';
 import { getImageProcessor } from './images';
-import { createVercelPurger } from './purge';
+import { createVercelPurger, deleteByTagInContext } from './purge';
 import { createRuntime, type Runtime } from './runtime';
 
 let runtime: Runtime | undefined;
 let configError: ConfigError | undefined;
 
+/**
+ * Region and version of the build. `scripts/build.ts` replaces both expressions with literals (esbuild `define`);
+ * unbundled they read the environment, which is unset.
+ */
+const BUILD = {
+  region: process.env.HOSTMARK_BUILD_REGION,
+  version: process.env.HOSTMARK_BUILD_VERSION,
+};
+
 /** Built on the first request of an instance; a configuration error is remembered, not retried. */
 export function getRuntime(): Runtime {
   if (configError) throw configError;
   try {
-    runtime ??= createRuntime(process.env, {
+    runtime ??= createRuntime(withBuildDefaults(process.env, BUILD), {
       images: getImageProcessor(),
       queueSdk: { send, sendBatch } as never,
-      purger: createVercelPurger((tags) => dangerouslyDeleteByTag(tags)),
+      purger: createVercelPurger(deleteByTagInContext),
     });
   } catch (err) {
     if (err instanceof ConfigError) {

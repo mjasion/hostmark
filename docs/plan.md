@@ -206,14 +206,15 @@ and delete, and the 403 without the origin secret. Stays `emulated`. Not done, n
 `cfn-lint` or `validate-template`, the Lambda event source mapping, function URL streaming through CloudFront, the
 viewer-request client address function, invalidation timing, memory of a 50 MP image on Lambda.
 
-Status of `adapters/vercel` (D197 to D199): done offline, thinner than `adapters/aws`. Functions (`api/index.ts` Hono,
-`api/queue.ts` consumer, `api/cron.ts`), Vercel Queues with an own dead letter topic, Cron Jobs, R2 for files, tag
-based purge, `vercel.json` validated by `pnpm check` against a subset of the published schema (the `vercel` CLI is not
-installed and was not run). The core queue contract passes on an in-memory model of Vercel Queues, which proves the
-adapter logic only. Stays `emulated`. Not done, needs an account: any deployment, the real queue (delivery, idempotency
-keys, visibility timeout, `queue/v2beta` trigger), `includeFiles` for the wasm codecs, the rewrites, the purge call
-against a real cache, client address header spoofing, R2 lifecycle, the web build with the platform name `vercel`
-on a real build, and an end to end run on Postgres (the aws adapter has one, vercel does not).
+Status of `adapters/vercel` (D197 to D199, D230 to D234): done offline. Functions bundled by esbuild (`api/index.js`
+Hono, `api/queue.js` consumer, `api/cron.js`, D230), Vercel Queues with an own dead letter topic and `maxDeliveries`,
+Cron Jobs, R2 for files, tag based purge, `vercel.json` validated by `pnpm check` against a subset of the published
+schema (the `vercel` CLI is not installed and was not run). The core queue contract passes on an in-memory model of
+Vercel Queues, which proves the adapter logic only; the bundles load under plain Node, the rewrites are pinned with
+the routing library's matcher, and an end to end run on Postgres and MinIO covers the purge and cache headers. Stays
+`emulated`. Not done, needs an account: any deployment, `vercel build` itself and its tracing of `dist/`, the real
+queue (delivery, idempotency keys, visibility timeout, `maxDeliveries`, `queue/v2beta` trigger), the purge call and a
+request context in queue and cron invocations, client address header spoofing, R2 lifecycle.
 
 Status of `adapters/gcp` (D180 to D189): done offline. Cloud Run services for the api and the worker (instance-based
 billing, fixed count), Cloud Scheduler calling Cloud Run Jobs, Pub/Sub with a dead letter topic (own unary pull
@@ -242,18 +243,13 @@ confirmations. Nothing runs until a platform is enabled and deployed.
 ## Open findings from verification
 
 Opus verification of the adapters on 2026-11-02 found nothing that blocks a commit with every platform off (the two
-GCP blockers are fixed, D200). All adapters stay `emulated`. The AWS items are fixed (D210 to D214), the GCP items
-except the Cloud login (D220 to D224) and the items for all platforms (D205 to D208); the items below are open.
+GCP blockers are fixed, D200). All adapters stay `emulated`. The AWS items are fixed (D210 to D214), the Vercel
+items except the forged POST (D230 to D234), the GCP items except the Cloud login (D220 to D224) and the items for all
+platforms (D205 to D208); the items below are open.
 
 Before enabling Vercel:
 
-- Functions may not load unbundled (`"type": "module"` with extensionless imports); prebundle like `adapters/aws`.
-- `/login`, `/signup` and `/app/files/<id>` serve the landing page, so S13 cannot reach the panel.
-- `/f` has no tag and no CDN header, against D199; the page stays public for 60 s plus 600 s after unpublish.
-- No `regions` and no `HOSTMARK_REGION`: `/f` reports `local` and functions run away from the database. No version.
-- A purge with no request context silently does nothing and `delete_file` records it as done. The DLQ copy can be lost
-  when its send fails. The killer job has no `maxDeliveries`.
-- `api/queue.ts` trusts every POST: `handleCallback` of `@vercel/queue` 0.10.0 checks no signature or token and takes the
+- `api/queue.js` (`src/functions/queue.ts`) trusts every POST: `handleCallback` of `@vercel/queue` 0.10.0 checks no signature or token and takes the
   job from the request body. The only protection is the documented "no public URL" of consumer functions. Prove it on
   the first deployment: a forged `ce-type` POST to `/api/queue` must not reach the handler.
 

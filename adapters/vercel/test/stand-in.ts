@@ -14,6 +14,8 @@ interface Entry {
  * A model of Vercel Queues as the documentation describes it, not the service: topics, `delaySeconds`, an idempotency
  * key that drops a repeated publish, `deliveryCount` starting at 1, a consumer that throws (or does not return) is
  * redelivered after `retry(...).afterSeconds`, one that returns is acknowledged. Time is scaled by `delayScale`.
+ * A message whose delivery number `maxDeliveries` failed is dropped (the trigger's `maxDeliveries`; what the service
+ * does then is not documented, the model assumes it discards the message).
  * It proves the adapter's own logic (idempotent publish, attempt numbers, backoff table, dead letter topic).
  * It cannot prove delivery, ordering or visibility timeout behaviour of the real service.
  */
@@ -21,8 +23,12 @@ export class QueueStandIn implements QueueSdk {
   readonly topics = new Map<string, Entry[]>();
   readonly seenKeys = new Set<string>();
   readonly delays: number[] = [];
+  readonly dropped: unknown[] = [];
 
-  constructor(private readonly delayScale = 0.01) {}
+  constructor(
+    private readonly delayScale = 0.01,
+    private readonly maxDeliveries = Number.POSITIVE_INFINITY,
+  ) {}
 
   private topic(name: string) {
     const existing = this.topics.get(name);
@@ -82,6 +88,11 @@ export class QueueStandIn implements QueueSdk {
       await run(entry.payload, entry.deliveryCount, entry.id);
       remove();
     } catch (error) {
+      if (entry.deliveryCount >= this.maxDeliveries) {
+        remove();
+        this.dropped.push(entry.payload);
+        return true;
+      }
       const { afterSeconds } = retryAfter(error, { messageId: entry.id, deliveryCount: entry.deliveryCount });
       this.delays.push(afterSeconds);
       entry.dueAt = Date.now() + afterSeconds * 1000 * this.delayScale;

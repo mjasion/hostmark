@@ -1,7 +1,10 @@
 // `pnpm check`: validates vercel.json offline against a subset of the published schema
 // (https://openapi.vercel.sh/vercel.json, kept in vercel.schema.subset.json) and against the contract.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { SCHEDULER_JOBS } from '@hostmark/contract';
+import { rumRegionOf } from '../src/build-info';
+import { MAX_DELIVERIES } from '../src/queue';
+import { FUNCTIONS } from './build';
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Schema = { [key: string]: Json };
@@ -72,8 +75,13 @@ export function checkConfig(
 ) {
   const problems = validate(config, schema as Schema);
   const c = config as {
+    buildCommand?: string;
+    regions?: unknown;
     crons?: { path: string; schedule: string }[];
-    functions?: Record<string, { experimentalTriggers?: { topic: string }[] }>;
+    functions?: Record<
+      string,
+      { includeFiles?: string; experimentalTriggers?: { topic: string; maxDeliveries?: number }[] }
+    >;
   };
   // Every scheduler job of the contract must be a cron that calls api/cron with the job name, with the same schedule.
   for (const [job, schedule] of Object.entries(SCHEDULER_JOBS)) {
@@ -86,12 +94,45 @@ export function checkConfig(
     const job = new URL(cron.path, 'https://x').searchParams.get('job') ?? '';
     if (!Object.hasOwn(SCHEDULER_JOBS, job)) problems.push(`crons: ${cron.path} names no scheduler job`);
   }
-  const topics = Object.values(c.functions ?? {}).flatMap(
-    (f) => f.experimentalTriggers?.map((t) => t.topic) ?? [],
-  );
+  const triggers = Object.values(c.functions ?? {}).flatMap((f) => f.experimentalTriggers ?? []);
+  const topics = triggers.map((t) => t.topic);
   if (!topics.includes('image-jobs')) problems.push('functions: no queue trigger for the topic image-jobs');
   if (topics.some((t) => t.endsWith('-dlq')))
     problems.push('functions: the dead letter topic must have no consumer');
+  // Without a bound a killer job is redelivered until its retention ends (the default is unlimited, D198).
+  for (const t of triggers.filter((x) => x.topic === 'image-jobs'))
+    if (t.maxDeliveries !== MAX_DELIVERIES)
+      problems.push(`functions: the image-jobs trigger must set maxDeliveries ${MAX_DELIVERIES}`);
+  problems.push(...checkLayout(c));
+  return problems;
+}
+
+/** The functions are the bundles of scripts/build.ts, and the build knows the region of the deployment. */
+function checkLayout(c: {
+  buildCommand?: string;
+  regions?: unknown;
+  functions?: Record<string, { includeFiles?: string }>;
+}): string[] {
+  const problems: string[] = [];
+  if (c.buildCommand !== 'node --import tsx scripts/build.ts')
+    problems.push('buildCommand: must be "node --import tsx scripts/build.ts", which bundles the functions');
+  try {
+    rumRegionOf(c);
+  } catch (err) {
+    problems.push(`regions: ${(err as Error).message}`);
+  }
+  const expected = Object.keys(FUNCTIONS).map((name) => `api/${name}.js`);
+  const actual = Object.keys(c.functions ?? {});
+  for (const key of actual)
+    if (!expected.includes(key))
+      problems.push(`functions: "${key}" is not a bundled function (${expected.join(', ')})`);
+  for (const [name, f] of Object.entries(FUNCTIONS)) {
+    const key = `api/${name}.js`;
+    if (!actual.includes(key)) problems.push(`functions: no entry for ${key}`);
+    else if (!existsSync(new URL(`../${key}`, here))) problems.push(`functions: ${key} does not exist`);
+    if (f.images && c.functions?.[key]?.includeFiles !== 'dist/wasm/*.wasm')
+      problems.push(`functions: ${key} must ship the codecs with includeFiles "dist/wasm/*.wasm"`);
+  }
   return problems;
 }
 

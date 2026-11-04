@@ -515,6 +515,15 @@ importers:
       '@hostmark/telemetry':
         specifier: workspace:*
         version: link:../../packages/telemetry
+      aws4fetch:
+        specifier: 1.0.20
+        version: 1.0.20
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      path-to-regexp:
+        specifier: 6.3.0
+        version: 6.3.0
       tsx:
         specifier: 4.23.15
         version: 4.23.15

@@ -1,24 +1,26 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "cd ../.. && pnpm install --frozen-lockfile",
-  "buildCommand": "cd ../.. && HOSTMARK_PLATFORM=vercel HOSTMARK_VARIANT=portable HOSTMARK_TOPOLOGY=single HOSTMARK_REGION=frankfurt pnpm --filter @hostmark/web build && rm -rf adapters/vercel/public && cp -r apps/web/dist adapters/vercel/public",
+  "buildCommand": "node --import tsx scripts/build.ts",
   "outputDirectory": "public",
+  "regions": ["fra1"],
   "functions": {
-    "api/index.ts": {
+    "api/index.js": {
       "maxDuration": 60,
-      "includeFiles": "node_modules/@jsquash/**/*.wasm"
+      "includeFiles": "dist/wasm/*.wasm"
     },
-    "api/cron.ts": {
+    "api/cron.js": {
       "maxDuration": 300
     },
-    "api/queue.ts": {
+    "api/queue.js": {
       "maxDuration": 300,
-      "includeFiles": "node_modules/@jsquash/**/*.wasm",
+      "includeFiles": "dist/wasm/*.wasm",
       "experimentalTriggers": [
         {
           "type": "queue/v2beta",
           "topic": "image-jobs",
-          "retryAfterSeconds": 30
+          "retryAfterSeconds": 30,
+          "maxDeliveries": 8
         }
       ]
     }
@@ -51,8 +53,12 @@
       "destination": "/api/index"
     },
     {
-      "source": "/((?!api/|media/|f/).*)",
-      "destination": "/index.html"
+      "source": "/((?:login|signup)/?|app(?:/.*)?)",
+      "destination": "/app/index.html"
+    },
+    {
+      "source": "/pricing{/}?",
+      "destination": "/pricing/index.html"
     }
   ],
   "headers": [
