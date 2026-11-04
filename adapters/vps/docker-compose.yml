@@ -55,7 +55,7 @@ services:
 
   redis:
     restart: unless-stopped
-    image: redis:7.4.8-alpine
+    image: redis:7.4.12-alpine
     # AOF keeps queued jobs across a container restart. No published port.
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
