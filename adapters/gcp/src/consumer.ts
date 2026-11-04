@@ -20,16 +20,30 @@ export const DEFAULT_CLOSE_GRACE_MS = 4_000;
 /** Bounds the `ModifyAckDeadline(0)` that hands messages back on close, and the wait for the pull loop to stop. */
 export const HAND_BACK_TIMEOUT_MS = 1_500;
 /**
- * Deadline of one `Pull` (gRPC deadline, propagated to the server). It bounds how long the loop runs after `close`, so a
- * batch that arrives while closing is handed back on a client that is still open. A response lost exactly at the
- * deadline would come back after the ack deadline, as after a lost lease; that race is not measured on real Pub/Sub.
+ * Deadline of one `Pull` while running (gRPC deadline, propagated to the server): an idle consumer waits this long for a
+ * message in one call instead of ten. A response lost exactly at the deadline would come back after the ack deadline,
+ * as after a lost lease; the longer deadline means ten times fewer deadlines, and the race is not measured on real
+ * Pub/Sub.
  */
-export const PULL_TIMEOUT_MS = 1_000;
+export const PULL_TIMEOUT_MS = 10_000;
+/**
+ * Deadline of a `Pull` that starts after `close` began; the pull in flight at that moment is cancelled instead (D220).
+ * It bounds how long the loop runs after `close`, so a batch that arrives while closing is handed back on a client that
+ * is still open.
+ */
+export const CLOSING_PULL_TIMEOUT_MS = 1_000;
 /** gRPC status of a pull that found nothing before its deadline: an empty batch, not an error. */
 const DEADLINE_EXCEEDED = 4;
+/** gRPC status set on the pull that `close` cancels. */
+const CANCELLED = 1;
 /** The longest `close` takes with the default grace: grace, hand-back, the last pull and its hand-back. */
 export const CLOSE_MAX_MS =
-  DEFAULT_CLOSE_GRACE_MS + HAND_BACK_TIMEOUT_MS + PULL_TIMEOUT_MS + HAND_BACK_TIMEOUT_MS;
+  DEFAULT_CLOSE_GRACE_MS + HAND_BACK_TIMEOUT_MS + CLOSING_PULL_TIMEOUT_MS + HAND_BACK_TIMEOUT_MS;
+
+/** What the consumer needs of a grpc-js call: a way to cancel it. */
+interface CancellableCall {
+  cancelWithStatus(code: number, details: string): void;
+}
 
 export interface ConsumerOptions {
   project: string;
@@ -176,6 +190,17 @@ export function startConsumer(opts: ConsumerOptions): { close(): Promise<void> }
     setDeadline([...held.keys()], lease).catch((error) => logger.warn('lease renewal failed', { error }));
   }, renewEvery);
 
+  /**
+   * The pull in flight, so that `close` can cancel it rather than wait up to `PULL_TIMEOUT_MS`. The generated client
+   * returns a plain promise, so the call is caught by a grpc-js call interceptor; google-gax passes
+   * `otherArgs.options` to grpc-js as the call options.
+   */
+  let inFlight: CancellableCall | undefined;
+  const trackPull = (options: unknown, nextCall: (options: unknown) => CancellableCall) => {
+    inFlight = nextCall(options);
+    return inFlight;
+  };
+
   const loop = (async () => {
     while (!closed) {
       const free = opts.concurrency - running.size;
@@ -184,10 +209,20 @@ export function startConsumer(opts: ConsumerOptions): { close(): Promise<void> }
         continue;
       }
       try {
-        const [res] = await (await client()).pull(
-          { subscription: subscriptionPath, maxMessages: free },
-          { timeout: PULL_TIMEOUT_MS, retry: null },
-        );
+        const sub = await client();
+        let res: v1.protos.google.pubsub.v1.IPullResponse;
+        try {
+          [res] = await sub.pull(
+            { subscription: subscriptionPath, maxMessages: free },
+            {
+              timeout: closed ? CLOSING_PULL_TIMEOUT_MS : PULL_TIMEOUT_MS,
+              retry: null,
+              otherArgs: { options: { interceptors: [trackPull] } },
+            },
+          );
+        } finally {
+          inFlight = undefined;
+        }
         const batch = res.receivedMessages ?? [];
         if (closed) {
           // Pulled while shutting down: give it straight back rather than start a job that SIGKILL would cut off.
@@ -219,6 +254,9 @@ export function startConsumer(opts: ConsumerOptions): { close(): Promise<void> }
   return {
     async close() {
       closed = true;
+      // A pull cancelled before it answered should get nothing leased; a batch already on its way back is lost to the
+      // ack deadline, the same race as at a deadline (the cancel is tested on the emulator only).
+      inFlight?.cancelWithStatus(CANCELLED, 'consumer closing');
       // Leases are still renewed during the grace period, so a running job keeps its message until it ends or is handed back.
       const graceMs = opts.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
       await settleWithin(Promise.allSettled([...running]), graceMs);
@@ -229,10 +267,11 @@ export function startConsumer(opts: ConsumerOptions): { close(): Promise<void> }
         // The lease is no longer renewed, so the message still comes back, after the ack deadline at the latest.
         logger.error('handing messages back failed', { count: unfinished.length, error }),
       );
-      // The pull in flight ends by its deadline; a batch it returns is handed back before the client closes.
+      // A pull that started after `close` ends by its short deadline; a batch it returns is handed back before the
+      // client closes.
       await settleWithin(
         loop.catch(() => {}),
-        PULL_TIMEOUT_MS + HAND_BACK_TIMEOUT_MS,
+        CLOSING_PULL_TIMEOUT_MS + HAND_BACK_TIMEOUT_MS,
       );
       await subscriber?.close();
       if (!opts.client) await pubsub.close();

@@ -4,6 +4,7 @@ import { createApp } from '@hostmark/core';
 import { onTerminate } from '@hostmark/node-runtime/runtime';
 import { createStaticHandler } from '@hostmark/node-runtime/static';
 import { createRuntime } from './runtime';
+import { closeServer, exitAfterDeadline, SHUTDOWN_DEADLINE_MS, withDeadline } from './shutdown';
 
 const runtime = createRuntime('api');
 const { env } = runtime;
@@ -16,10 +17,15 @@ const server = serve({ fetch, port: env.PORT, hostname: env.HOST }, (info) => {
   runtime.telemetry.logger.info('api listening', { port: info.port });
 }) as Server;
 
-onTerminate(async () => {
-  await new Promise<void>((resolve) => {
-    server.close(() => resolve());
-    server.closeIdleConnections();
-  });
-  await runtime.shutdown();
-});
+// Cloud Run kills the instance 10 s after SIGTERM. Requests in flight get a few seconds, then the SSE streams that are
+// still open are cut (their clients reconnect elsewhere), telemetry is flushed, and the process exits before the kill.
+onTerminate(
+  withDeadline(
+    async () => {
+      await closeServer(server);
+      await runtime.shutdown();
+    },
+    SHUTDOWN_DEADLINE_MS,
+    exitAfterDeadline,
+  ),
+);

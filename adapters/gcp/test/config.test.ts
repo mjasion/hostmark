@@ -44,6 +44,76 @@ describe('infra/', () => {
     ]);
   });
 
+  it('notices the review findings coming back', () => {
+    const tf = readInfra();
+    const services = resourceBlocks(tf, 'google_cloud_run_v2_service');
+    const api = services.get('api') ?? '';
+    const worker = services.get('worker') ?? '';
+    const cases: [string, string][] = [
+      [
+        tf.replace('AUTH_SIGNUP_ENABLED = var.auth_signup_enabled', 'AUTH_SIGNUP_ENABLED = "true"'),
+        'AUTH_SIGNUP_ENABLED must come from var.auth_signup_enabled, default "false" (D7)',
+      ],
+      [
+        tf.replace(/^\s*OTLP_ENDPOINT = var\.otlp_endpoint\n/m, ''),
+        'OTLP_ENDPOINT must come from var.otlp_endpoint, default "" (export off)',
+      ],
+      [
+        tf.replace(api, api.replace('cpu_idle = false', 'cpu_idle = true')),
+        'the api needs CPU outside requests (cpu_idle = false)',
+      ],
+      [
+        tf.replace(api, api.replace('invoker_iam_disabled = true', '')),
+        'the api must disable the invoker IAM check',
+      ],
+      [
+        `${tf}\nresource "google_cloud_run_v2_service_iam_member" "public" {\n  member = "allUsers"\n}\n`,
+        'no resource may be granted to allUsers',
+      ],
+      [
+        tf.replace(
+          worker,
+          worker.replace('scaling_mode          = "MANUAL"', 'scaling_mode          = "AUTOMATIC"'),
+        ),
+        'the worker must scale manually to var.worker_instances',
+      ],
+      [
+        tf.replace('retention_duration_seconds = 0', 'retention_duration_seconds = 604800'),
+        'the bucket must keep no soft-deleted objects (retention_duration_seconds = 0)',
+      ],
+      [
+        tf.replace('serve_while_stale = 600', 'serve_while_stale = 86400'),
+        'Cloud CDN must serve stale content for at most 600 s',
+      ],
+      [
+        tf.replace('https_redirect         = true', 'https_redirect         = false'),
+        'the http url map must redirect to https',
+      ],
+      [
+        tf.replace('"cloudresourcemanager.googleapis.com",', ''),
+        'cloudresourcemanager.googleapis.com must be enabled',
+      ],
+      [
+        tf.replace(
+          '    S3_SECRET_ACCESS_KEY = google_secret_manager_secret.hmac_secret.secret_id\n',
+          '    S3_SECRET_ACCESS_KEY = google_secret_manager_secret.hmac_secret.secret_id\n    SEED_API_KEY = google_secret_manager_secret.seed_api_key.secret_id\n',
+        ),
+        'api and worker must not get the seed keys',
+      ],
+      [
+        tf.replace(/^ *S3_SECRET_ACCESS_KEY = "unused-by-the-scheduler"\n/m, ''),
+        'environment of the scheduled jobs fails the schema: S3_SECRET_ACCESS_KEY',
+      ],
+    ];
+    for (const [mutated, problem] of cases) {
+      expect(mutated, problem).not.toBe(tf);
+      expect(
+        checkConfig(mutated).some((p) => p.startsWith(problem)),
+        problem,
+      ).toBe(true);
+    }
+  });
+
   it('holds no credentials', () => {
     expect(read('infra/main.tf')).not.toMatch(/BEGIN [A-Z ]*PRIVATE KEY/);
   });

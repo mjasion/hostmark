@@ -45,3 +45,25 @@ variable "api_max_instances" {
   type    = number
   default = 10
 }
+
+variable "auth_signup_enabled" {
+  type        = string
+  default     = "false"
+  description = "AUTH_SIGNUP_ENABLED of the api. D7: off on a deployment unless a run needs it; scenario S13 signs up, so a run that includes it sets \"true\"."
+  validation {
+    condition     = contains(["true", "false"], var.auth_signup_enabled)
+    error_message = "auth_signup_enabled must be \"true\" or \"false\"."
+  }
+}
+
+variable "otlp_endpoint" {
+  type        = string
+  default     = ""
+  description = "OTLP/HTTP base URL that the api, the worker and the scheduled jobs export telemetry to. Empty: no export."
+}
+
+variable "otlp_headers" {
+  type        = bool
+  default     = false
+  description = "Creates the secret hostmark-otlp-headers and passes it as OTEL_EXPORTER_OTLP_HEADERS. deploy.sh sets it when OTLP_HEADERS is set and stores the value."
+}

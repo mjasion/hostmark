@@ -1,8 +1,16 @@
+import { createServer, request } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { PubSub } from '@google-cloud/pubsub';
 import type { JobMessage } from '@hostmark/contract';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CLOSE_MAX_MS, startConsumer } from '../src/consumer';
-import { CLOUD_RUN_SIGTERM_GRACE_MS, SHUTDOWN_DEADLINE_MS, withDeadline } from '../src/shutdown';
+import { CLOSE_MAX_MS, CLOSING_PULL_TIMEOUT_MS, PULL_TIMEOUT_MS, startConsumer } from '../src/consumer';
+import {
+  API_DRAIN_MS,
+  CLOUD_RUN_SIGTERM_GRACE_MS,
+  closeServer,
+  SHUTDOWN_DEADLINE_MS,
+  withDeadline,
+} from '../src/shutdown';
 
 const emulator = process.env.PUBSUB_EMULATOR_HOST;
 const quiet = () => {};
@@ -34,6 +42,15 @@ describe('shutdown budget (Cloud Run SIGKILLs 10 s after SIGTERM)', () => {
     expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(CLOUD_RUN_SIGTERM_GRACE_MS);
   });
 
+  it('leaves the api most of the budget for the database and telemetry after the drain', () => {
+    expect(API_DRAIN_MS).toBeLessThanOrEqual(SHUTDOWN_DEADLINE_MS / 3);
+  });
+
+  it('pulls long while running and briefly while closing (D220)', () => {
+    expect(PULL_TIMEOUT_MS).toBeGreaterThanOrEqual(10_000);
+    expect(CLOSING_PULL_TIMEOUT_MS).toBeLessThanOrEqual(1_000);
+  });
+
   it('gives up on a shutdown that does not settle by the deadline', async () => {
     let timedOut = false;
     const stop = withDeadline(
@@ -55,6 +72,57 @@ describe('shutdown budget (Cloud Run SIGKILLs 10 s after SIGTERM)', () => {
     )();
     await new Promise((r) => setTimeout(r, 100));
     expect(early).toBe(false);
+  });
+});
+
+describe('api server close (D296)', () => {
+  it('lets a short request finish, cuts a stream that outlives the drain, and resolves', async () => {
+    const server = createServer((req, res) => {
+      if (req.url === '/events') {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write(': open\n\n'); // a stream that never ends by itself, like an SSE status stream
+        return;
+      }
+      setTimeout(() => res.end('done'), 200);
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const { port } = server.address() as AddressInfo;
+    const get = (path: string) =>
+      new Promise<{ status?: number; body: string; cut: boolean }>((resolve) => {
+        const req = request({ host: '127.0.0.1', port, path }, (res) => {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => resolve({ status: res.statusCode, body, cut: false }));
+          res.on('aborted', () => resolve({ status: res.statusCode, body, cut: true }));
+          res.on('error', () => resolve({ status: res.statusCode, body, cut: true }));
+        });
+        req.on('error', () => resolve({ body: '', cut: true }));
+        req.end();
+      });
+
+    const stream = get('/events');
+    await new Promise((r) => setTimeout(r, 100));
+    const short = get('/short');
+    await new Promise((r) => setTimeout(r, 20));
+
+    const started = Date.now();
+    await closeServer(server, 500);
+    const took = Date.now() - started;
+
+    expect(await short).toEqual({ status: 200, body: 'done', cut: false });
+    const cut = await stream;
+    expect(cut.cut).toBe(true);
+    expect(cut.body).toContain(': open');
+    expect(took).toBeGreaterThanOrEqual(450);
+    expect(took).toBeLessThan(2_000);
+  });
+
+  it('resolves at once when nothing is open', async () => {
+    const server = createServer((_req, res) => res.end());
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    const started = Date.now();
+    await closeServer(server, 5_000);
+    expect(Date.now() - started).toBeLessThan(500);
   });
 });
 
@@ -115,6 +183,26 @@ describe('shutdown budget (Cloud Run SIGKILLs 10 s after SIGTERM)', () => {
     await b.close();
     expect(got?.attempt).toBe(2);
     expect(Date.now() - started).toBeLessThan(15_000);
+  }, 40_000);
+
+  it('cancels the long pull of an idle consumer on close, and the next consumer gets the next message at once', async () => {
+    const IDLE = crypto.randomUUID();
+    const a = consumer(async () => {}, 300);
+    await new Promise((r) => setTimeout(r, 500)); // a pull is open
+    const started = Date.now();
+    await a.close();
+    // Without the cancel, close would wait for the pull's own deadline or give up on it.
+    expect(Date.now() - started).toBeLessThan(CLOSING_PULL_TIMEOUT_MS);
+
+    await admin.topic(topicName).publishMessage({ data: Buffer.from(JSON.stringify(job(IDLE))) });
+    const seen: { jobId: string; attempt: number }[] = [];
+    const b = consumer(async (msg, ctx) => {
+      seen.push({ jobId: msg.jobId, attempt: ctx.attempt });
+    }, 300);
+    // A message leased to the cancelled pull would come back only after the 60 s ack deadline.
+    const got = await until(10_000, () => seen.find((s) => s.jobId === IDLE));
+    await b.close();
+    expect(got?.attempt).toBe(1);
   }, 40_000);
 
   it('lets a job that ends within the grace finish and acks it instead of handing it back', async () => {

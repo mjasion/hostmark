@@ -24,8 +24,17 @@ locals {
     APP_VERSION         = var.app_version
     HOSTMARK_TOPOLOGY   = "single"
     WORKER_CONCURRENCY  = "1"
-    AUTH_SIGNUP_ENABLED = "true"
+    # D7: off unless a run needs it (S13 signs up); deploy.sh passes AUTH_SIGNUP_ENABLED (D291).
+    AUTH_SIGNUP_ENABLED = var.auth_signup_enabled
+    # Empty: telemetry is not exported. Headers for the collector, when it needs any, come from a secret (D290).
+    OTLP_ENDPOINT = var.otlp_endpoint
   }
+  # The scheduled jobs touch only the database and the queue (D19), so they get neither the HMAC key nor storage access.
+  # The env schema requires the S3 key variables; these values sign nothing that is ever sent (D297).
+  jobs_env = merge(local.runtime_env, {
+    S3_ACCESS_KEY_ID     = "unused-by-the-scheduler"
+    S3_SECRET_ACCESS_KEY = "unused-by-the-scheduler"
+  })
   # Only the seed job gets the seed keys; the services do not need them.
   seed_secrets = {
     SEED_API_KEY       = google_secret_manager_secret.seed_api_key.secret_id
@@ -35,12 +44,19 @@ locals {
     migrate = tomap({ DATABASE_URL = google_secret_manager_secret.database_url.secret_id })
     seed    = tomap(merge({ DATABASE_URL = google_secret_manager_secret.database_url.secret_id }, local.seed_secrets))
   }
-  runtime_secrets = {
+  # Read by the OpenTelemetry exporters themselves (`key=value,...`), so the env schema does not list it (D290).
+  otlp_secrets = var.otlp_headers ? tomap({ OTEL_EXPORTER_OTLP_HEADERS = google_secret_manager_secret.otlp_headers[0].secret_id }) : tomap({})
+  runtime_secrets = merge({
     DATABASE_URL         = google_secret_manager_secret.database_url.secret_id
     BETTER_AUTH_SECRET   = google_secret_manager_secret.auth_secret.secret_id
     S3_ACCESS_KEY_ID     = google_secret_manager_secret.hmac_access_id.secret_id
     S3_SECRET_ACCESS_KEY = google_secret_manager_secret.hmac_secret.secret_id
-  }
+  }, local.otlp_secrets)
+  jobs_secrets = merge({
+    DATABASE_URL = google_secret_manager_secret.database_url.secret_id
+  }, local.otlp_secrets)
+  # Every secret an operator job reads, by variable name.
+  operator_secret_ids = merge(values(local.operator_secrets)...)
 }
 
 resource "google_project_service" "apis" {
@@ -51,6 +67,9 @@ resource "google_project_service" "apis" {
     "secretmanager.googleapis.com",
     "cloudscheduler.googleapis.com",
     "storage.googleapis.com",
+    # Service accounts, the custom role and the project lookup (data.google_project) go through these two (D297).
+    "iam.googleapis.com",
+    "cloudresourcemanager.googleapis.com",
   ])
   service            = each.key
   disable_on_destroy = false
@@ -58,9 +77,23 @@ resource "google_project_service" "apis" {
 
 # ---------------------------------------------------------------- identities
 
+# One account per role (D297): api and worker; the scheduled jobs (database and queue only, D19); the operator jobs
+# (migrate and seed: the database and the seed keys); and the Cloud Scheduler caller.
 resource "google_service_account" "runtime" {
   account_id   = "hostmark-runtime"
-  display_name = "hostmark api, worker and jobs"
+  display_name = "hostmark api and worker"
+  depends_on   = [google_project_service.apis]
+}
+
+resource "google_service_account" "jobs" {
+  account_id   = "hostmark-jobs"
+  display_name = "hostmark scheduled jobs"
+  depends_on   = [google_project_service.apis]
+}
+
+resource "google_service_account" "operator" {
+  account_id   = "hostmark-operator"
+  display_name = "hostmark migrate and seed jobs"
   depends_on   = [google_project_service.apis]
 }
 
@@ -70,7 +103,8 @@ resource "google_service_account" "scheduler" {
   depends_on   = [google_project_service.apis]
 }
 
-# D100: the only Compute permission the runtime has; it purges the CDN of one URL map.
+# D100: the only Compute permission the runtime has; it purges the CDN of one URL map. A deleted custom role can be
+# undeleted for 7 days and its ID stays taken for up to 37 (README, Destroy).
 resource "google_project_iam_custom_role" "cdn_invalidate" {
   role_id     = "hostmarkCdnInvalidate"
   title       = "hostmark CDN invalidation"
@@ -151,6 +185,13 @@ resource "google_pubsub_topic_iam_member" "runtime_viewer" {
   member = "serviceAccount:${google_service_account.runtime.email}"
 }
 
+# cleanup-expired and requeue-stuck enqueue; the jobs never ping the queue, so no viewer role.
+resource "google_pubsub_topic_iam_member" "jobs_publisher" {
+  topic  = google_pubsub_topic.jobs.id
+  role   = "roles/pubsub.publisher"
+  member = "serviceAccount:${google_service_account.jobs.email}"
+}
+
 resource "google_pubsub_subscription_iam_member" "runtime_subscriber" {
   subscription = google_pubsub_subscription.worker.id
   role         = "roles/pubsub.subscriber"
@@ -164,7 +205,14 @@ resource "google_storage_bucket" "media" {
   location                    = upper(var.region)
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
-  force_destroy               = false
+  # A destroy fails while the bucket holds objects; empty it first (README, Destroy).
+  force_destroy = false
+
+  # Deleted originals and variants are gone at once, as on the other platforms, instead of being kept and billed for
+  # the default 7 days of soft delete (D295).
+  soft_delete_policy {
+    retention_duration_seconds = 0
+  }
 
   # D74: the safeguard from the spec. Originals and variants expire after 8 days even if the scheduler never runs.
   lifecycle_rule {
@@ -233,6 +281,16 @@ resource "google_secret_manager_secret" "seed_admin_api_key" {
   depends_on = [google_project_service.apis]
 }
 
+# Only when the deploy has OTLP_HEADERS (var.otlp_headers): the collector's credentials, never a plain variable (D290).
+resource "google_secret_manager_secret" "otlp_headers" {
+  count     = var.otlp_headers ? 1 : 0
+  secret_id = "hostmark-otlp-headers"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.apis]
+}
+
 resource "google_secret_manager_secret" "hmac_access_id" {
   secret_id = "hostmark-s3-access-key-id"
   replication {
@@ -266,11 +324,19 @@ resource "google_secret_manager_secret_iam_member" "runtime" {
   member    = "serviceAccount:${google_service_account.runtime.email}"
 }
 
-resource "google_secret_manager_secret_iam_member" "seed" {
-  for_each  = local.seed_secrets
+resource "google_secret_manager_secret_iam_member" "jobs" {
+  for_each  = local.jobs_secrets
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.runtime.email}"
+  member    = "serviceAccount:${google_service_account.jobs.email}"
+}
+
+# Only the operator account reads the seed keys; api and worker cannot (D297).
+resource "google_secret_manager_secret_iam_member" "operator" {
+  for_each  = local.operator_secret_ids
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.operator.email}"
 }
 
 # ---------------------------------------------------------------- services
@@ -282,6 +348,8 @@ resource "google_cloud_run_v2_service" "api" {
   ingress              = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
   default_uri_disabled = true
   deletion_protection  = false
+  # No IAM check for invoking: ingress lets only the load balancer in, and no allUsers binding is needed (D294).
+  invoker_iam_disabled = true
 
   template {
     service_account                  = google_service_account.runtime.email
@@ -297,9 +365,11 @@ resource "google_cloud_run_v2_service" "api" {
       ports {
         container_port = 8080
       }
+      # Instance-based billing: the CPU stays allocated outside requests, so the telemetry exporters, the SSE polls
+      # and the shutdown run at full speed (D292). It costs the always-on instance and every instance's idle time.
       resources {
         limits   = { cpu = "1", memory = "512Mi" }
-        cpu_idle = true
+        cpu_idle = false
       }
       dynamic "env" {
         for_each = local.runtime_env
@@ -325,8 +395,9 @@ resource "google_cloud_run_v2_service" "api" {
   depends_on = [google_secret_manager_secret_iam_member.runtime, google_secret_manager_secret_version.hmac_secret]
 }
 
-# The worker is a service, not a worker pool: pools are in Preview (D181). Instance-based billing keeps the CPU on
-# between messages, and a fixed instance count replaces request-based autoscaling, which a pull consumer cannot trigger.
+# The worker is a service with manual scaling, not a worker pool (D181, D293): it keeps the /healthz startup probe.
+# Instance-based billing keeps the CPU on between messages, and a fixed instance count replaces request-based
+# autoscaling, which a pull consumer cannot trigger.
 resource "google_cloud_run_v2_service" "worker" {
   name                 = "hostmark-worker"
   location             = var.region
@@ -334,14 +405,16 @@ resource "google_cloud_run_v2_service" "worker" {
   default_uri_disabled = true
   deletion_protection  = false
 
+  # Manual scaling: exactly this many instances, whatever the traffic; revision min and max are ignored in this mode.
+  scaling {
+    scaling_mode          = "MANUAL"
+    manual_instance_count = var.worker_instances
+  }
+
   template {
     service_account = google_service_account.runtime.email
     # No timeout: it bounds requests (here only /healthz), not shutdown. Cloud Run sends SIGKILL 10 s after SIGTERM
     # whatever is set; the worker hands back the job it holds and exits before that (src/consumer.ts, src/shutdown.ts).
-    scaling {
-      min_instance_count = var.worker_instances
-      max_instance_count = var.worker_instances
-    }
     containers {
       image   = var.image
       command = ["node"]
@@ -394,7 +467,7 @@ resource "google_cloud_run_v2_job" "scheduled" {
 
   template {
     template {
-      service_account = google_service_account.runtime.email
+      service_account = google_service_account.jobs.email
       max_retries     = 0
       timeout         = "600s"
       containers {
@@ -405,14 +478,14 @@ resource "google_cloud_run_v2_job" "scheduled" {
           limits = { cpu = "1", memory = "512Mi" }
         }
         dynamic "env" {
-          for_each = local.runtime_env
+          for_each = local.jobs_env
           content {
             name  = env.key
             value = env.value
           }
         }
         dynamic "env" {
-          for_each = local.runtime_secrets
+          for_each = local.jobs_secrets
           content {
             name = env.key
             value_source {
@@ -426,10 +499,11 @@ resource "google_cloud_run_v2_job" "scheduled" {
       }
     }
   }
-  depends_on = [google_secret_manager_secret_iam_member.runtime, google_secret_manager_secret_version.hmac_secret]
+  depends_on = [google_secret_manager_secret_iam_member.jobs]
 }
 
 # Migrations and the seed run as one-off jobs of the same image: `gcloud run jobs execute hostmark-migrate --wait`.
+# deploy.sh applies the migrate job alone and runs it before the services move to the new image (D298).
 resource "google_cloud_run_v2_job" "operator" {
   for_each            = local.operator_secrets
   name                = "hostmark-${each.key}"
@@ -438,7 +512,7 @@ resource "google_cloud_run_v2_job" "operator" {
 
   template {
     template {
-      service_account = google_service_account.runtime.email
+      service_account = google_service_account.operator.email
       max_retries     = 0
       timeout         = "600s"
       containers {
@@ -463,7 +537,7 @@ resource "google_cloud_run_v2_job" "operator" {
       }
     }
   }
-  depends_on = [google_secret_manager_secret_iam_member.runtime, google_secret_manager_secret_iam_member.seed]
+  depends_on = [google_secret_manager_secret_iam_member.operator]
 }
 
 resource "google_cloud_run_v2_job_iam_member" "scheduler" {
@@ -529,6 +603,9 @@ resource "google_compute_backend_service" "api" {
   # D6) stays at most 30 days at the edge and a year in a browser; an unpublish or delete invalidates the edge (D100).
   cdn_policy {
     cache_mode = "USE_ORIGIN_HEADERS"
+    # Stale copies are served at most 10 minutes past their TTL while the origin is revalidated or failing; the API
+    # default is a day. Not a TTL, so the mode accepts it (D295).
+    serve_while_stale = 600
     cache_key_policy {
       include_host         = true
       include_protocol     = true
@@ -563,10 +640,26 @@ resource "google_compute_global_forwarding_rule" "https" {
   ip_address            = google_compute_global_address.lb.id
 }
 
-# The serverless NEG needs the load balancer to invoke the api; ingress already restricts who can reach it.
-resource "google_cloud_run_v2_service_iam_member" "public" {
-  name     = google_cloud_run_v2_service.api.name
-  location = var.region
-  role     = "roles/run.invoker"
-  member   = "allUsers"
+# Port 80 answers with a 301 to the same URL on https (D294). IPv4 only, like the https rule: an IPv6 address would
+# need a second global address and two more forwarding rules.
+resource "google_compute_url_map" "http_redirect" {
+  name = "hostmark-http-redirect"
+  default_url_redirect {
+    https_redirect         = true
+    redirect_response_code = "MOVED_PERMANENTLY_DEFAULT"
+    strip_query            = false
+  }
+}
+
+resource "google_compute_target_http_proxy" "http_redirect" {
+  name    = "hostmark-http-redirect"
+  url_map = google_compute_url_map.http_redirect.id
+}
+
+resource "google_compute_global_forwarding_rule" "http" {
+  name                  = "hostmark-http"
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  port_range            = "80"
+  target                = google_compute_target_http_proxy.http_redirect.id
+  ip_address            = google_compute_global_address.lb.id
 }

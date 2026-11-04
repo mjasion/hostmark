@@ -3,10 +3,11 @@ import { createJobHandler } from '@hostmark/core';
 import { onTerminate } from '@hostmark/node-runtime/runtime';
 import { startConsumer } from './consumer';
 import { createRuntime } from './runtime';
-import { SHUTDOWN_DEADLINE_MS, withDeadline } from './shutdown';
+import { exitAfterDeadline, SHUTDOWN_DEADLINE_MS, withDeadline } from './shutdown';
 
 // A Cloud Run service must listen on PORT; the worker answers a health check there and nothing else. The service
-// runs with instance-based billing and a minimum of one instance, so the CPU stays allocated between messages.
+// runs with instance-based billing and a fixed instance count (manual scaling, D293), so the CPU stays allocated
+// between messages.
 const runtime = createRuntime('worker');
 const { env } = runtime;
 
@@ -46,9 +47,6 @@ onTerminate(
       await runtime.shutdown();
     },
     SHUTDOWN_DEADLINE_MS,
-    () => {
-      console.error(JSON.stringify({ level: 'error', msg: 'shutdown deadline passed, exiting' }));
-      process.exit(1);
-    },
+    exitAfterDeadline,
   ),
 );
