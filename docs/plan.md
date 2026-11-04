@@ -220,8 +220,8 @@ billing, fixed count), Cloud Scheduler calling Cloud Run Jobs, Pub/Sub with a de
 consumer, D17 rules), Cloud Storage over the XML API, a global load balancer with Cloud CDN, the `X-Client-Ip` custom
 header (D182), `urlMaps.invalidateCache` for D100, Terraform in `infra/`, `scripts/deploy.sh` (never run) and
 `scripts/check-config.ts`. The queue contract (visibility, backoff, dead letter) passes on the Pub/Sub emulator, the
-storage contract on MinIO, the image contract always. Stays `emulated`. Not done, needs an account: any deployment,
-`terraform validate`, a successful invalidation and its delay, Google's SigV4 for presigned PUTs, the load balancer
+storage contract on MinIO, the image contract always. Stays `emulated`. `terraform validate` passes with the provider
+(D202). Not done, needs an account: any deployment, a successful invalidation and its delay, Google's SigV4 for presigned PUTs, the load balancer
 header on a real request, the event loop block on a real instance (not measured), costs.
 
 ## E6. The benchmark in GitHub Actions
@@ -270,7 +270,7 @@ Before enabling Vercel:
 
 Before enabling Google Cloud:
 
-- Add a Cloud login to `deploy.yml`. Run `terraform validate`; nothing has parsed `infra/` with the provider.
+- Add a Cloud login to `deploy.yml`.
 - Cloud Run kills 10 s after SIGTERM by its documentation, so the 55 s grace is wrong and a long job loses an attempt.
 - The `hostmark-seed` job prints generated seed keys to Cloud Logging. The DLQ reader subscription has no
   `expiration_policy`, so it lapses after 31 idle days and dead letters are lost.

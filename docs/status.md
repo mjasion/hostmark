@@ -64,14 +64,13 @@ pipeline 128; the local and gcp images build with a frozen lockfile.
    platform (AWS, Vercel, GCP, all).
 2. `deploy.yml` has no cloud login step and no `id-token: write` (D123). Railway, Fly and VPS have no
    `platform-deploy` script.
-3. Run `terraform validate` on `adapters/gcp/infra`; nothing has parsed it with the provider.
-4. Vercel: prove on the first deployment that a forged POST to `/api/queue` does not reach the handler.
-5. E2: rerun everything on a clean, quiet machine (about 47 minutes), then the behaviours and spot-checks under "Not
+3. Vercel: prove on the first deployment that a forged POST to `/api/queue` does not reach the handler.
+4. E2: rerun everything on a clean, quiet machine (about 47 minutes), then the behaviours and spot-checks under "Not
    verified after E2" in `plan.md`.
-6. Preview cleanup for a missed `closed` event: no sweep exists (`adapters/cloudflare/pipeline/README.md`).
-7. Optional: drop the copy of about 80 lines in `adapters/gcp/src/runtime.ts` by giving `NodePlatform` a queue
+5. Preview cleanup for a missed `closed` event: no sweep exists (`adapters/cloudflare/pipeline/README.md`).
+6. Optional: drop the copy of about 80 lines in `adapters/gcp/src/runtime.ts` by giving `NodePlatform` a queue
    factory (D185). Add a Postgres advisory lock so the scheduler can run more than one replica (D159).
-8. E8 to E10 need real deployments. The evaluation framework for criteria A, C, D, G and H is not in this repository.
+7. E8 to E10 need real deployments. The evaluation framework for criteria A, C, D, G and H is not in this repository.
 
 Minor:
 

@@ -127,7 +127,7 @@ backoff, redelivery after the ack deadline and the dead letter topic after five 
 
 ## Not proven (needs a real project)
 
-Any deployment; `terraform validate` (needs the provider, not run); a successful invalidation and its delay; presigned
+Any deployment; `terraform plan` against a real project (`terraform validate` passes in CI, D202); a successful invalidation and its delay; presigned
 PUT and `Content-Length` binding against Google; the load balancer header on a real request; the real Pub/Sub ack
 deadline, `ModifyAckDeadline` and `deliveryAttempt`; the managed certificate; prices; the longest event loop block at the
 smallest instance (not measured).
