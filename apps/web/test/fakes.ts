@@ -35,7 +35,12 @@ export const problem = (status: number, title: string, detail?: string) =>
 
 export type Handler = (url: URL, init: RequestInit) => Response | Promise<Response>;
 
-/** Stubs `fetch` with routes keyed by `METHOD /path`; an unknown route fails the test loudly. */
+const aborted = () => new DOMException('The operation was aborted.', 'AbortError');
+
+/**
+ * Stubs `fetch` with routes keyed by `METHOD /path`; an unknown route fails the test loudly. Like a browser, an
+ * aborted `signal` rejects the call, also while its handler is still pending.
+ */
 export function stubFetch(routes: Record<string, Handler>) {
   const calls: { method: string; path: string; init: RequestInit }[] = [];
   const fn = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -44,7 +49,14 @@ export function stubFetch(routes: Record<string, Handler>) {
     calls.push({ method, path: url.pathname, init });
     const handler = routes[`${method} ${url.pathname}`];
     if (!handler) throw new Error(`unexpected request ${method} ${url.pathname}`);
-    return handler(url, init);
+    const { signal } = init;
+    if (signal?.aborted) throw aborted();
+    const answer = Promise.resolve(handler(url, init));
+    if (!signal) return answer;
+    return new Promise<Response>((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(aborted()), { once: true });
+      answer.then(resolve, reject);
+    });
   });
   vi.stubGlobal('fetch', fn);
   return { fn, calls };

@@ -1,7 +1,8 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { sessionSignal } from './api';
 import { signedOut } from './session';
-import { type UploadError, uploadFile, validateFile } from './upload';
+import { CANCELLED_WHILE_COMPLETING, type UploadError, uploadFile, validateFile } from './upload';
 
 export interface UploadItem {
   key: string;
@@ -9,7 +10,10 @@ export interface UploadItem {
   status: 'queued' | 'uploading' | 'done' | 'error' | 'cancelled';
   progress: number;
   fileId?: string;
+  /** The reason of an `error`, or a note on a `cancelled` row. */
   error?: string;
+  /** False when the file was refused (type, size): Retry is not offered. */
+  retryable?: boolean;
 }
 
 interface UploadsApi {
@@ -46,6 +50,8 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
     async (item: UploadItem) => {
       const controller = new AbortController();
       controllers.current.set(item.key, controller);
+      // A 401 counts only while the session that started the upload is still the current one (D302).
+      const session = sessionSignal();
       try {
         const fileId = await uploadFile(item.file, {
           signal: controller.signal,
@@ -57,8 +63,16 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         void qc.invalidateQueries({ queryKey: ['stats'] });
       } catch (e) {
         const err = e as UploadError;
-        if (err.unauthorized) signedOut(qc);
-        patch(item.key, err.cancelled ? { status: 'cancelled' } : { status: 'error', error: err.message });
+        if (err.unauthorized && !session.aborted) signedOut(qc);
+        const completing = err.cancelled && err.message === CANCELLED_WHILE_COMPLETING;
+        // The server may have queued the file before the abort; then the gallery shows it.
+        if (completing) void qc.invalidateQueries({ queryKey: ['files'] });
+        patch(
+          item.key,
+          err.cancelled
+            ? { status: 'cancelled', error: completing ? err.message : undefined }
+            : { status: 'error', error: err.message, retryable: err.retryable },
+        );
       } finally {
         controllers.current.delete(item.key);
       }
@@ -96,6 +110,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         status: error ? 'error' : 'queued',
         progress: 0,
         error: error ?? undefined,
+        retryable: !error,
       });
     }
     setItems((all) => [...next, ...all]);
@@ -114,7 +129,13 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   const retry = useCallback(
     (key: string) => {
       started.current.delete(key);
-      patch(key, { status: 'queued', progress: 0, error: undefined, fileId: undefined });
+      patch(key, {
+        status: 'queued',
+        progress: 0,
+        error: undefined,
+        fileId: undefined,
+        retryable: undefined,
+      });
     },
     [patch],
   );

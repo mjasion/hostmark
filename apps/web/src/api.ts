@@ -8,13 +8,66 @@ function hex(bytes: number): string {
 
 export const traceparent = () => `00-${hex(16)}-${hex(8)}-01`;
 
+/**
+ * What one signed-in session holds open: its API requests (through this controller) and its event streams.
+ * `endSession` ends both, on sign-out, on a 401 and on sign-in (D302).
+ */
+let session = new AbortController();
+const streams = new Set<EventSource>();
+
+/** Aborted when the session that is current now ends. */
+export const sessionSignal = (): AbortSignal => session.signal;
+
+/** Registers an event stream so that `endSession` closes it; returns the function that unregisters it. */
+export function trackStream(es: EventSource): () => void {
+  streams.add(es);
+  return () => void streams.delete(es);
+}
+
+/** Aborts every API request of the current session and closes its event streams. Later requests are unaffected. */
+export function endSession(): void {
+  session.abort();
+  session = new AbortController();
+  for (const es of streams) es.close();
+  streams.clear();
+}
+
+/**
+ * Every request belongs to the session that started it. One still running when that session ends is aborted, and
+ * an answer that arrives anyway (a 401 above all) is dropped, so it can never sign out the next user (D302).
+ */
+function sessionFetch(signal?: AbortSignal): typeof fetch {
+  return async (input, init = {}) => {
+    const own = session.signal;
+    const signals = [own, signal, init.signal ?? undefined].filter((s): s is AbortSignal => s !== undefined);
+    // `fetch` is resolved per call rather than captured at import time.
+    const res = await fetch(input, { ...init, signal: signals.length > 1 ? AbortSignal.any(signals) : own });
+    if (own.aborted) throw new DOMException('The session ended.', 'AbortError');
+    return res;
+  };
+}
+
+const clientFor = (signal?: AbortSignal) =>
+  createClient({
+    credentials: 'same-origin',
+    fetch: sessionFetch(signal),
+    headers: () => ({ traceparent: traceparent() }),
+  });
+
 /** The trace starts in the browser (spec, Telemetry): every `fetch` to the API carries a fresh `traceparent`. */
-export const client = createClient({
-  credentials: 'same-origin',
-  // Resolved per call rather than captured at import time.
-  fetch: (input, init) => fetch(input, init),
-  headers: () => ({ traceparent: traceparent() }),
-});
+export const client = clientFor();
+
+/** The same client with one more signal, for requests a user can cancel (the create and complete of an upload). */
+export const cancellableClient = (signal: AbortSignal) => clientFor(signal);
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Whether a path segment can name a file at all. Anything else is never sent to the API. */
+export const isFileId = (id: string): boolean => UUID.test(id);
+
+/** Dates are shown in English whatever the browser's language, in the browser's time zone. */
+export const formatDate = (iso: string): string =>
+  new Date(iso).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' });
 
 /** A readable message for any error: the RFC 9457 `detail` when there is one. */
 export function describeError(error: unknown): string {

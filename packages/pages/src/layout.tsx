@@ -43,7 +43,8 @@ export function Layout({ title, description, rum, head, children }: PageProps) {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>{title}</title>
         <meta name="description" content={description} />
-        <link rel="icon" href="data:," />
+        {/* Built by apps/web from its public/ directory (D301). */}
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
         {head}
         <style>{raw(CSS)}</style>
       </head>

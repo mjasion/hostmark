@@ -1,7 +1,8 @@
+import { ApiError } from '@hostmark/contract/client';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
-import { client, describeError, formatBytes } from '../api';
+import { client, describeError, formatBytes, formatDate, isFileId } from '../api';
 import { fileKey, useLiveFile } from '../live';
 import { statusLabel } from './Panel';
 
@@ -16,7 +17,29 @@ export function fitInside(width: number, height: number, size: number) {
   };
 }
 
+/** Also for another user's file: the API does not tell the two apart (D7). */
+export function FileNotFound() {
+  return (
+    <article className="detail">
+      <h1>File not found</h1>
+      <p className="muted">This file does not exist, was deleted, or belongs to another account.</p>
+      <p>
+        <Link to="/app">Back to files</Link>
+      </p>
+    </article>
+  );
+}
+
+/** 404, and 400 for an id the API's stricter UUID check refuses: either way there is no such file. */
+const isMissing = (error: unknown) =>
+  error instanceof ApiError && (error.status === 404 || error.status === 400);
+
+/** An id that cannot be a file never reaches the API (`/app/files/not-a-uuid`, `/app/files/..%2f..%2fetc`, D304). */
 export function FileDetail({ id }: { id: string }) {
+  return isFileId(id) ? <FileView id={id} /> : <FileNotFound />;
+}
+
+function FileView({ id }: { id: string }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const { data: file, error, isPending, live } = useLiveFile(id);
@@ -37,6 +60,7 @@ export function FileDetail({ id }: { id: string }) {
   });
 
   if (isPending) return <p className="muted">Loading...</p>;
+  if (isMissing(error)) return <FileNotFound />;
   if (error || !file) {
     return (
       <>
@@ -91,9 +115,9 @@ export function FileDetail({ id }: { id: string }) {
         <dt>Dimensions</dt>
         <dd>{file.width && file.height ? `${file.width} x ${file.height}` : '-'}</dd>
         <dt>Uploaded</dt>
-        <dd>{new Date(file.createdAt).toLocaleString()}</dd>
+        <dd>{formatDate(file.createdAt)}</dd>
         <dt>Expires</dt>
-        <dd>{new Date(file.expiresAt).toLocaleString()}</dd>
+        <dd>{formatDate(file.expiresAt)}</dd>
         <dt>Attempts</dt>
         <dd>{file.attempts}</dd>
       </dl>

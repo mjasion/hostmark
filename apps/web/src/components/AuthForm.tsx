@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { type FormEvent, useState } from 'react';
+import { endSession } from '../api';
 import { signIn, signUp } from '../auth';
 import { clearUserData, sessionKey } from '../session';
 
@@ -20,7 +21,9 @@ export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
     setError(null);
     try {
       await (signup ? signUp(email, password) : signIn(email, password));
-      // The session may have ended without a 401, so the previous user's files can still be cached.
+      // The session may have ended without a 401, so the previous user's files can still be cached, and a request
+      // of that session can still be running.
+      endSession();
       clearUserData(qc);
       await qc.invalidateQueries({ queryKey: sessionKey });
       await navigate({ to: '/app' });

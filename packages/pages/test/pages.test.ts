@@ -54,11 +54,17 @@ describe.each(Object.entries(pages))('%s page', (_name, render) => {
     const urlsInAttributes = [...html.matchAll(/\s(?:src|href)="([^"]*)"/g)].map((m) => m[1] as string);
     for (const u of urlsInAttributes) {
       // The og:url, canonical and image URLs are content, not requests; anything loaded is same-origin.
-      expect(u).toMatch(/^(\/(?!\/)|#|data:,|https:\/\/hm\.test\/)/);
+      expect(u).toMatch(/^(\/(?!\/)|#|https:\/\/hm\.test\/)/);
     }
     expect(html).not.toMatch(/<link[^>]+rel="stylesheet"/);
     expect(html).not.toMatch(/@import|url\(\s*https?:/);
     expect(html).toContain('<style>');
+  });
+
+  it('links the favicon of the web build, once (D301)', () => {
+    expect(html.match(/<link[^>]+rel="icon"[^>]*>/g)).toEqual([
+      '<link rel="icon" href="/favicon.svg" type="image/svg+xml"/>',
+    ]);
   });
 });
 

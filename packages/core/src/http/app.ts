@@ -153,9 +153,7 @@ export function createApp(
       );
       const res = problemResponse(c, 500, 'Internal Server Error', 'An unexpected error occurred');
       for (const [k, v] of Object.entries(knownHeaders)) res.headers.set(k, v);
-      if (c.req.path.startsWith('/api/')) res.headers.set('cache-control', 'private, no-store');
-      else if (c.req.path.startsWith('/media/') || c.req.path.startsWith('/f/'))
-        res.headers.set('cache-control', 'no-store');
+      res.headers.set('cache-control', c.req.path.startsWith('/api/') ? 'private, no-store' : 'no-store');
       c.res = res;
       return;
     }
@@ -200,6 +198,9 @@ export function createApp(
           // A CDN default could otherwise cache the 404 of a file that is about to become public.
           else if ((c.req.path.startsWith('/media/') || c.req.path.startsWith('/f/')) && status !== 200)
             headers['cache-control'] = 'no-store';
+          // D303: any other path reaches only the generic 404 (or an error); a CDN must not keep it either, or a
+          // file that the next deploy adds stays missing.
+          else if (status >= 400) headers['cache-control'] = 'no-store';
           withHeaders(c, headers);
         },
         { kind: SpanKind.SERVER },

@@ -87,7 +87,9 @@ export function createStaticHandler(options: StaticOptions): (req: Request) => P
     if (req.method !== 'GET' && req.method !== 'HEAD') return null;
     const path = new URL(req.url).pathname;
     if (isReserved(path)) return null;
-    const files = candidates(path);
+    // A shell route always serves the one shell file, whatever follows `/app/`: the path is never mapped to the file
+    // system, so `/app/files/..%2f..%2fetc` gets the app and its "File not found" view, not the API's 404 (D303).
+    const files = isShellRoute(path) ? [join(root, SHELL)] : candidates(path);
     // Malformed and dotfile paths under /assets/ are a plain miss, with the same no-store answer as any other.
     if (!files) return path.startsWith('/assets/') ? notFound() : null;
     for (const file of files) {
@@ -101,7 +103,7 @@ export function createStaticHandler(options: StaticOptions): (req: Request) => P
       };
       return new Response(req.method === 'HEAD' ? null : new Uint8Array(body), { headers });
     }
-    // The app's 404 carries no Cache-Control; a CDN could keep the miss of an asset that the next deploy adds.
+    // A CDN must not keep the miss of an asset that the next deploy adds (the app's own 404 is no-store too, D303).
     return path.startsWith('/assets/') ? notFound() : null;
   };
 }

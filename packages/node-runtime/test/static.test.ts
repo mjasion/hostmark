@@ -18,6 +18,8 @@ beforeAll(() => {
   writeFileSync(join(root, 'pricing/index.html'), 'pricing');
   writeFileSync(join(root, 'app/index.html'), 'shell');
   writeFileSync(join(root, 'rum.js'), 'rum');
+  writeFileSync(join(root, 'robots.txt'), 'User-agent: *\n');
+  writeFileSync(join(root, 'favicon.svg'), '<svg/>');
   writeFileSync(join(root, 'assets/app-abc.js'), 'js');
   writeFileSync(join(root, 'assets/app-abc.css'), 'css');
   writeFileSync(join(root, 'assets/logo.svg'), '<svg/>');
@@ -54,6 +56,32 @@ describe('static handler', () => {
     }
     expect(await get('/loginx')).toBeNull();
     expect(await get('/application')).toBeNull();
+  });
+
+  it('serves the shell for any path below /app/, even one that is no file path (D303)', async () => {
+    for (const path of [
+      '/app/files/..%2f..%2fetc',
+      '/app/files/not-a-uuid',
+      '/app/%ff',
+      '/app/files/%2e%2e%2fx',
+    ]) {
+      const res = await get(path);
+      expect(res?.status, path).toBe(200);
+      expect(await res?.text(), path).toBe('shell');
+      expect(res?.headers.get('content-type'), path).toBe('text/html; charset=utf-8');
+    }
+  });
+
+  it('serves robots.txt and the favicon from the root with the short cache (D300, D301)', async () => {
+    for (const [path, type] of [
+      ['/robots.txt', 'text/plain; charset=utf-8'],
+      ['/favicon.svg', 'image/svg+xml'],
+    ] as const) {
+      const res = await get(path);
+      expect(res?.status, path).toBe(200);
+      expect(res?.headers.get('content-type'), path).toBe(type);
+      expect(res?.headers.get('cache-control'), path).toBe('public, max-age=300');
+    }
   });
 
   it('marks hashed assets immutable and rum.js short-lived', async () => {

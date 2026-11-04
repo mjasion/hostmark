@@ -45,6 +45,8 @@ describe.skipIf(!databaseUrl)('GET /f/:id', () => {
       "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     );
     expect(res.headers.get('referrer-policy')).toBe('same-origin');
+    // D300: out of search results, while the Open Graph tags below still serve link previews.
+    expect(res.headers.get('x-robots-tag')).toBe('noindex');
     const html = await res.text();
     expect(html).toContain('<meta property="og:title" content="Image 800 x 600"/>');
     expect(html).toContain('<meta property="og:type" content="website"/>');
@@ -121,9 +123,12 @@ describe.skipIf(!databaseUrl)('GET /f/:id', () => {
     },
   );
 
-  it('sets the referrer policy on the HTML 404 as well', async () => {
-    const res = await h.request(`/f/${crypto.randomUUID()}`);
-    expect(res.headers.get('referrer-policy')).toBe('same-origin');
+  it('sets the referrer policy and noindex on the HTML 404 as well', async () => {
+    for (const path of [`/f/${crypto.randomUUID()}`, '/f/not-a-uuid', `/f/${crypto.randomUUID()}/extra`]) {
+      const res = await h.request(path);
+      expect(res.headers.get('referrer-policy'), path).toBe('same-origin');
+      expect(res.headers.get('x-robots-tag'), path).toBe('noindex');
+    }
   });
 
   it('keeps only the origin of a public URL that has a path, query or fragment', async () => {

@@ -1,6 +1,7 @@
 import { MAX_UPLOAD_BYTES } from '@hostmark/contract/constants';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { UploadError, uploadFile, validateFile } from '../src/upload';
+import { endSession } from '../src/api';
+import { CANCELLED_WHILE_COMPLETING, UploadError, uploadFile, validateFile } from '../src/upload';
 import { createFile, FakeXHR, FILE_ID, fileJson, json, problem, stubFetch } from './fakes';
 
 const future = () => new Date(Date.now() + 600_000).toISOString();
@@ -114,6 +115,93 @@ describe('uploadFile', () => {
   it('shows the problem detail of a 413 from the server', async () => {
     stubFetch({ 'POST /api/uploads': () => problem(413, 'Payload Too Large', 'Limit is 10485760 bytes') });
     await expect(uploadFile(createFile(), hooks())).rejects.toThrow('Limit is 10485760 bytes');
+  });
+
+  it('aborts a running complete on cancel and says the file may still be processed (D302)', async () => {
+    const { calls } = stubFetch({
+      'POST /api/uploads': () => created(),
+      [`POST /api/uploads/${FILE_ID}/complete`]: () => new Promise<Response>(() => {}),
+    });
+    const controller = new AbortController();
+    const done = uploadFile(createFile(), hooks(controller.signal));
+    done.catch(() => {});
+    await tick();
+    FakeXHR.last().finish(200);
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    controller.abort();
+    const err = await done.catch((e) => e);
+    expect(err).toBeInstanceOf(UploadError);
+    expect(err.cancelled).toBe(true);
+    expect(err.message).toBe(CANCELLED_WHILE_COMPLETING);
+    expect(calls[1]?.init.signal?.aborted).toBe(true);
+  });
+
+  it('does not send complete when cancelled right after the PUT', async () => {
+    const { calls } = stubFetch({ 'POST /api/uploads': () => created() });
+    const controller = new AbortController();
+    const done = uploadFile(createFile(), hooks(controller.signal));
+    done.catch(() => {});
+    await tick();
+    // The PUT has loaded, so aborting the XHR does nothing; the check before complete must catch it.
+    FakeXHR.last().finish(200);
+    controller.abort();
+    const err = await done.catch((e) => e);
+    expect(err.cancelled).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('is aborted by the end of the session, during the PUT', async () => {
+    stubFetch({ 'POST /api/uploads': () => created() });
+    const done = uploadFile(createFile(), hooks());
+    done.catch(() => {});
+    await tick();
+    endSession();
+    const err = await done.catch((e) => e);
+    expect(err.cancelled).toBe(true);
+    expect(FakeXHR.last().aborted).toBe(true);
+  });
+
+  describe('retry', () => {
+    const failure = async (routes: Parameters<typeof stubFetch>[0], put?: number) => {
+      stubFetch({ 'POST /api/uploads': () => created(), ...routes });
+      FakeXHR.reset();
+      const done = uploadFile(createFile(), hooks());
+      done.catch(() => {});
+      if (put !== undefined) {
+        await vi.waitFor(() => expect(FakeXHR.instances).toHaveLength(1));
+        FakeXHR.last().finish(put);
+      }
+      return (await done.catch((e) => e)) as UploadError;
+    };
+    const complete = `POST /api/uploads/${FILE_ID}/complete`;
+
+    it('is not offered for a file the API refused (type, size)', async () => {
+      for (const status of [400, 413, 415]) {
+        const err = await failure({ 'POST /api/uploads': () => problem(status, 'Refused', 'No') });
+        expect(err.retryable, String(status)).toBe(false);
+      }
+      const big = await failure({ [complete]: () => problem(413, 'Payload Too Large', 'Too big') }, 200);
+      expect(big.retryable).toBe(false);
+      const local = await uploadFile(createFile('a.gif', 'image/gif'), hooks()).catch((e) => e);
+      expect(local.retryable).toBe(false);
+    });
+
+    it('is offered for failures a new attempt can get past', async () => {
+      expect((await failure({ 'POST /api/uploads': () => problem(500, 'Error', 'Down') })).retryable).toBe(
+        true,
+      );
+      expect((await failure({ 'POST /api/uploads': () => problem(503, 'Error', 'Down') })).retryable).toBe(
+        true,
+      );
+      expect((await failure({}, 403)).retryable).toBe(true);
+      expect((await failure({}, 500)).retryable).toBe(true);
+      expect(
+        (await failure({ [complete]: () => problem(409, 'Conflict', 'No object') }, 200)).retryable,
+      ).toBe(true);
+      expect((await failure({ [complete]: () => problem(503, 'Unavailable', 'Queue') }, 200)).retryable).toBe(
+        true,
+      );
+    });
   });
 
   it('shows the problem detail when completing fails', async () => {

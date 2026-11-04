@@ -73,6 +73,32 @@ describe.skipIf(!databaseUrl)('http', () => {
       expect(res.headers.get('x-platform')).toBe('test-portable');
     });
 
+    it('marks the generic 404 no-store on every path outside /api, so no CDN keeps it (D303)', async () => {
+      for (const path of ['/nope', '/assets/app-gone.js', '/robots.txt', '/some/deep/path?x=1']) {
+        for (const method of ['GET', 'HEAD', 'POST']) {
+          const res = await h.request(path, { method });
+          expect(res.status, `${method} ${path}`).toBe(404);
+          expect(res.headers.get('cache-control'), `${method} ${path}`).toBe('no-store');
+        }
+      }
+      // /api keeps its own policy, which is no-store as well.
+      expect((await h.request('/api/nope')).headers.get('cache-control')).toBe('private, no-store');
+    });
+
+    it('marks the error of a failed dependency resolution no-store on any path (D303)', async () => {
+      const app = createApp(() => {
+        throw new Error('config missing');
+      });
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const res = await app.request('/nope');
+        expect(res.status).toBe(500);
+        expect(res.headers.get('cache-control')).toBe('no-store');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('does not leak internals on an unexpected 500 and keeps the headers', async () => {
       const db = new Proxy(h.deps.db, {
         get(target, prop, receiver) {

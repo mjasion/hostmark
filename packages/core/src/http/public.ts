@@ -90,6 +90,10 @@ export function pageModel(
   };
 }
 
+/**
+ * Every `/f/*` page, the 200 included. D300: share pages stay out of search results; link previews still read the
+ * Open Graph tags, which `noindex` does not hide.
+ */
 export function htmlResponse(status: number, html: string, cacheControl: string): Response {
   return new Response(html, {
     status,
@@ -99,6 +103,7 @@ export function htmlResponse(status: number, html: string, cacheControl: string)
       'content-security-policy': CSP,
       'x-content-type-options': 'nosniff',
       'referrer-policy': 'same-origin',
+      'x-robots-tag': 'noindex',
     },
   });
 }
