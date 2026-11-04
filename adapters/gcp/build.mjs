@@ -20,7 +20,8 @@ await build({
     worker: 'src/worker.ts',
     'run-job': 'src/run-job.ts',
     migrate: dbCli('migrate'),
-    seed: dbCli('seed'),
+    // Not the packages/db CLI: that one prints the keys it generates, and a job's output goes to Cloud Logging.
+    seed: 'src/seed.ts',
   },
   outdir: 'dist',
   bundle: true,

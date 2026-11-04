@@ -11,6 +11,26 @@ import type { JobHandler } from '@hostmark/core/ports';
 import type { Telemetry } from '@hostmark/telemetry';
 import { MAX_DELAY_SECONDS, NOT_BEFORE_ATTRIBUTE } from './queue';
 
+/**
+ * Cloud Run sends SIGKILL 10 s after SIGTERM to a service instance, and the grace period cannot be configured (container
+ * contract). Shutdown therefore has to finish well inside it: wait a little for running handlers, hand back what is
+ * still held, close the clients. See `src/shutdown.ts` for the bound of the whole process.
+ */
+export const DEFAULT_CLOSE_GRACE_MS = 4_000;
+/** Bounds the `ModifyAckDeadline(0)` that hands messages back on close, and the wait for the pull loop to stop. */
+export const HAND_BACK_TIMEOUT_MS = 1_500;
+/**
+ * Deadline of one `Pull` (gRPC deadline, propagated to the server). It bounds how long the loop runs after `close`, so a
+ * batch that arrives while closing is handed back on a client that is still open. A response lost exactly at the
+ * deadline would come back after the ack deadline, as after a lost lease; that race is not measured on real Pub/Sub.
+ */
+export const PULL_TIMEOUT_MS = 1_000;
+/** gRPC status of a pull that found nothing before its deadline: an empty batch, not an error. */
+const DEADLINE_EXCEEDED = 4;
+/** The longest `close` takes with the default grace: grace, hand-back, the last pull and its hand-back. */
+export const CLOSE_MAX_MS =
+  DEFAULT_CLOSE_GRACE_MS + HAND_BACK_TIMEOUT_MS + PULL_TIMEOUT_MS + HAND_BACK_TIMEOUT_MS;
+
 export interface ConsumerOptions {
   project: string;
   /** Short name of the subscription; its dead letter policy is part of the topology (infra/ and `topology.ts`). */
@@ -26,7 +46,10 @@ export interface ConsumerOptions {
   renewEverySeconds?: number;
   /** A handler may keep a message this long; then renewal stops and Pub/Sub hands it to another consumer. */
   maxHoldSeconds?: number;
-  /** `close` waits this long for running handlers, then gives up on them; Pub/Sub redelivers what they held. */
+  /**
+   * `close` waits this long for running handlers, then hands what they hold back to Pub/Sub (ack deadline 0), so it is
+   * redelivered at once to another instance instead of after the ack deadline.
+   */
   closeGraceMs?: number;
   /** Sleep between pulls that returned nothing. */
   idleMs?: number;
@@ -39,6 +62,13 @@ interface Held {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Waits for `work` at most `ms`; the work is not cancelled. */
+async function settleWithin(work: Promise<unknown>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([work, new Promise((r) => (timer = setTimeout(r, ms)))]);
+  clearTimeout(timer);
+}
 
 /**
  * A pull consumer over the unary Pull, Acknowledge and ModifyAckDeadline calls, which keeps the visibility rules of D17
@@ -64,6 +94,8 @@ export function startConsumer(opts: ConsumerOptions): { close(): Promise<void> }
   let subscriber: v1.SubscriberClient | undefined;
   const held = new Map<string, Held>();
   const running = new Set<Promise<void>>();
+  /** Messages handed back on close: their handler may still finish, but must not ack or delay them any more. */
+  const handedBack = new Set<string>();
 
   async function client(): Promise<v1.SubscriberClient> {
     subscriber ??= new v1.SubscriberClient(
@@ -72,13 +104,12 @@ export function startConsumer(opts: ConsumerOptions): { close(): Promise<void> }
     return subscriber;
   }
 
-  async function setDeadline(ackIds: string[], seconds: number) {
+  async function setDeadline(ackIds: string[], seconds: number, timeoutMs?: number) {
     if (ackIds.length === 0) return;
-    await (await client()).modifyAckDeadline({
-      subscription: subscriptionPath,
-      ackIds,
-      ackDeadlineSeconds: seconds,
-    });
+    await (await client()).modifyAckDeadline(
+      { subscription: subscriptionPath, ackIds, ackDeadlineSeconds: seconds },
+      timeoutMs ? { timeout: timeoutMs, retry: null } : undefined,
+    );
   }
 
   async function handle(
@@ -113,6 +144,7 @@ export function startConsumer(opts: ConsumerOptions): { close(): Promise<void> }
         });
       } catch (err) {
         held.delete(ackId);
+        if (handedBack.has(ackId)) return;
         const final = attempt >= MAX_ATTEMPTS;
         logger.warn(
           final ? 'message failed for good, left to the dead letter policy' : 'message failed, retrying',
@@ -127,10 +159,13 @@ export function startConsumer(opts: ConsumerOptions): { close(): Promise<void> }
         return;
       }
       held.delete(ackId);
+      // Handed back on close: Pub/Sub already redelivers it, and the client is closing.
+      if (handedBack.has(ackId)) return;
       await (await client()).acknowledge({ subscription: subscriptionPath, ackIds: [ackId] });
     } catch (err) {
       // Unparseable message or a failed call to Pub/Sub: the deadline expires and the message comes back.
       held.delete(ackId);
+      if (handedBack.has(ackId)) return;
       logger.error('message handling failed', { ackId, error: err });
     }
   }
@@ -149,8 +184,16 @@ export function startConsumer(opts: ConsumerOptions): { close(): Promise<void> }
         continue;
       }
       try {
-        const [res] = await (await client()).pull({ subscription: subscriptionPath, maxMessages: free });
+        const [res] = await (await client()).pull(
+          { subscription: subscriptionPath, maxMessages: free },
+          { timeout: PULL_TIMEOUT_MS, retry: null },
+        );
         const batch = res.receivedMessages ?? [];
+        if (closed) {
+          // Pulled while shutting down: give it straight back rather than start a job that SIGKILL would cut off.
+          await handBack(batch.map((r) => r.ackId as string)).catch(() => {});
+          break;
+        }
         for (const received of batch) {
           const task = handle(received).finally(() => running.delete(task));
           running.add(task);
@@ -158,27 +201,40 @@ export function startConsumer(opts: ConsumerOptions): { close(): Promise<void> }
         if (batch.length === 0) await sleep(idleMs);
       } catch (error) {
         if (closed) break;
+        if ((error as { code?: number }).code === DEADLINE_EXCEEDED) continue;
         logger.error('queue pull failed', { subscription: subscriptionPath, error });
         await sleep(1000);
       }
     }
   })();
 
+  /** Ack deadline 0: Pub/Sub redelivers now. The redelivery counts as an attempt, as a lost lease would. */
+  async function handBack(ackIds: string[]) {
+    if (ackIds.length === 0) return;
+    for (const id of ackIds) handedBack.add(id);
+    await setDeadline(ackIds, 0, HAND_BACK_TIMEOUT_MS);
+    logger.warn('messages handed back on shutdown', { count: ackIds.length });
+  }
+
   return {
     async close() {
       closed = true;
+      // Leases are still renewed during the grace period, so a running job keeps its message until it ends or is handed back.
+      const graceMs = opts.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
+      await settleWithin(Promise.allSettled([...running]), graceMs);
       clearInterval(renewer);
-      // Leases stop being renewed from here on, so what is still running comes back after the ack deadline at the latest.
-      let timer: NodeJS.Timeout | undefined;
-      await Promise.race([
-        Promise.allSettled([...running]),
-        new Promise((r) => {
-          timer = setTimeout(r, opts.closeGraceMs ?? 55_000);
-        }),
-      ]);
-      clearTimeout(timer);
+      const unfinished = [...held.keys()];
+      held.clear();
+      await handBack(unfinished).catch((error) =>
+        // The lease is no longer renewed, so the message still comes back, after the ack deadline at the latest.
+        logger.error('handing messages back failed', { count: unfinished.length, error }),
+      );
+      // The pull in flight ends by its deadline; a batch it returns is handed back before the client closes.
+      await settleWithin(
+        loop.catch(() => {}),
+        PULL_TIMEOUT_MS + HAND_BACK_TIMEOUT_MS,
+      );
       await subscriber?.close();
-      await loop.catch(() => {});
       if (!opts.client) await pubsub.close();
     },
   };

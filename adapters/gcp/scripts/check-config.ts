@@ -16,17 +16,44 @@ import { CLIENT_IP_HEADER } from '../src/platform';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+/** Bodies of every `resource "<type>" "<name>" { ... }` block of that type, by name (braces matched, strings skipped). */
+export function resourceBlocks(tf: string, type: string): Map<string, string> {
+  const blocks = new Map<string, string>();
+  for (const m of tf.matchAll(new RegExp(`^resource "${type}" "([\\w-]+)" \\{`, 'gm'))) {
+    const start = (m.index ?? 0) + m[0].length - 1;
+    let depth = 0;
+    let inString = false;
+    for (let i = start; i < tf.length; i++) {
+      const c = tf[i];
+      if (inString) {
+        if (c === '\\') i++;
+        else if (c === '"') inString = false;
+      } else if (c === '"') inString = true;
+      else if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) {
+        blocks.set(m[1] as string, tf.slice(start + 1, i));
+        break;
+      }
+    }
+  }
+  return blocks;
+}
+
+/** All of `infra/*.tf` as one text. */
+export function readInfra(): string {
+  const infra = join(root, 'infra');
+  return readdirSync(infra)
+    .filter((f) => f.endsWith('.tf'))
+    .map((f) => readFileSync(join(infra, f), 'utf8'))
+    .join('\n');
+}
+
 /** Returns the problems found; empty when the configuration is consistent. */
-export function checkConfig(): string[] {
+export function checkConfig(tf: string = readInfra()): string[] {
   const problems: string[] = [];
   const expect = (ok: boolean, message: string) => {
     if (!ok) problems.push(message);
   };
-  const infra = join(root, 'infra');
-  const tf = readdirSync(infra)
-    .filter((f) => f.endsWith('.tf'))
-    .map((f) => readFileSync(join(infra, f), 'utf8'))
-    .join('\n');
 
   // Queue topology (D17).
   expect(tf.includes(`topic      = "${QUEUE_NAME}"`), `topic must be ${QUEUE_NAME}`);
@@ -44,6 +71,18 @@ export function checkConfig(): string[] {
     !/retry_policy\s*\{/.test(tf),
     'retry_policy would override the backoff the consumer sets per message',
   );
+  // Without an expiration policy a subscription is deleted after 31 days without activity; the dead letter reader is
+  // idle by design.
+  const subscriptions = resourceBlocks(tf, 'google_pubsub_subscription');
+  expect(
+    subscriptions.has('worker') && subscriptions.has('dlq'),
+    'the worker and dlq subscriptions must exist',
+  );
+  for (const [name, body] of subscriptions)
+    expect(
+      /expiration_policy\s*\{\s*ttl\s*=\s*""/.test(body),
+      `subscription ${name} must never expire (expiration_policy { ttl = "" })`,
+    );
 
   // Scheduler (one Cloud Scheduler job per core job; the plan's one-replica rule does not apply).
   for (const [name, cron] of Object.entries(SCHEDULER_JOBS)) {
@@ -79,6 +118,15 @@ export function checkConfig(): string[] {
     'the runtime needs invalidateCache for the CDN purge',
   );
   expect(/enable_cdn\s*=\s*true/.test(tf), 'Cloud CDN must be enabled on the backend service');
+  // The origin's Cache-Control decides what is cached and for how long (D6: /media a year, immutable). Cloud CDN caps
+  // an origin TTL at 30 days by default, and the API refuses default_ttl, max_ttl and client_ttl with USE_ORIGIN_HEADERS.
+  const backend = resourceBlocks(tf, 'google_compute_backend_service').get('api') ?? '';
+  expect(/cache_mode\s*=\s*"USE_ORIGIN_HEADERS"/.test(backend), 'Cloud CDN must use the origin headers');
+  for (const ttl of ['default_ttl', 'max_ttl', 'client_ttl'])
+    expect(
+      !new RegExp(`^\\s*${ttl}\\s*=`, 'm').test(backend),
+      `${ttl} cannot be set with USE_ORIGIN_HEADERS`,
+    );
 
   // Worker: a fixed count of always-on instances, one job per process (D97).
   expect(/cpu_idle\s*=\s*false/.test(tf), 'the worker needs CPU outside requests (instance-based billing)');
@@ -111,6 +159,20 @@ export function checkConfig(): string[] {
     parsed.success,
     `environment of the services fails the schema: ${parsed.success ? '' : parsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join(', ')}`,
   );
+
+  // The seed job never generates, and so never prints, a key: both values come from Secret Manager.
+  const operator = resourceBlocks(tf, 'google_cloud_run_v2_job').get('operator') ?? '';
+  expect(
+    /for_each\s*=\s*local\.operator_secrets/.test(operator),
+    'the operator jobs must take local.operator_secrets',
+  );
+  const seedSecrets = tf.match(/seed_secrets = \{([\s\S]*?)\n {2}\}/)?.[1] ?? '';
+  for (const name of ['SEED_API_KEY', 'SEED_ADMIN_API_KEY'])
+    expect(
+      new RegExp(`^\\s*${name}\\s*=`, 'm').test(seedSecrets),
+      `the seed job must get ${name} from Secret Manager`,
+    );
+  expect(/^\s*seed\s*=.*local\.seed_secrets/m.test(tf), 'the seed job must get the seed secrets');
 
   // No secret in the repository.
   expect(!/BEGIN [A-Z ]*PRIVATE KEY|AIza[0-9A-Za-z_-]{20,}/.test(tf), 'infra/ holds key material');

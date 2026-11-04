@@ -242,7 +242,8 @@ confirmations. Nothing runs until a platform is enabled and deployed.
 ## Open findings from verification
 
 Opus verification of the adapters on 2026-11-02 found nothing that blocks a commit with every platform off (the two
-GCP blockers are fixed, D200). All adapters stay `emulated`. The AWS items are fixed (D210 to D214); the items below are open.
+GCP blockers are fixed, D200). All adapters stay `emulated`. The AWS items are fixed (D210 to D214), and the GCP
+items except the Cloud login (D220 to D224); the items below are open.
 
 Before enabling Vercel:
 
@@ -259,11 +260,6 @@ Before enabling Vercel:
 Before enabling Google Cloud:
 
 - Add a Cloud login to `deploy.yml`.
-- Cloud Run kills 10 s after SIGTERM by its documentation, so the 55 s grace is wrong and a long job loses an attempt.
-- The `hostmark-seed` job prints generated seed keys to Cloud Logging. The DLQ reader subscription has no
-  `expiration_policy`, so it lapses after 31 idle days and dead letters are lost.
-- Four sequential purge calls per file allow about 125 files a minute, the metadata token fetch has no timeout, and the
-  effective Max TTL of `/media` is unresolved.
 
 All platforms:
 

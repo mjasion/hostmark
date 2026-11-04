@@ -26,6 +26,15 @@ locals {
     WORKER_CONCURRENCY  = "1"
     AUTH_SIGNUP_ENABLED = "true"
   }
+  # Only the seed job gets the seed keys; the services do not need them.
+  seed_secrets = {
+    SEED_API_KEY       = google_secret_manager_secret.seed_api_key.secret_id
+    SEED_ADMIN_API_KEY = google_secret_manager_secret.seed_admin_api_key.secret_id
+  }
+  operator_secrets = {
+    migrate = tomap({ DATABASE_URL = google_secret_manager_secret.database_url.secret_id })
+    seed    = tomap(merge({ DATABASE_URL = google_secret_manager_secret.database_url.secret_id }, local.seed_secrets))
+  }
   runtime_secrets = {
     DATABASE_URL         = google_secret_manager_secret.database_url.secret_id
     BETTER_AUTH_SECRET   = google_secret_manager_secret.auth_secret.secret_id
@@ -86,11 +95,16 @@ resource "google_pubsub_topic" "dlq" {
 }
 
 # The dead letter queue is a topic with a pull subscription that keeps messages for 7 days, so they can be inspected.
+# Nothing reads it in normal operation, so without an expiration policy it would be deleted after 31 idle days and the
+# dead letters published after that would be lost.
 resource "google_pubsub_subscription" "dlq" {
   name                       = "${local.dlq_topic}-reader"
   topic                      = google_pubsub_topic.dlq.id
   message_retention_duration = "604800s"
   ack_deadline_seconds       = 60
+  expiration_policy {
+    ttl = "" # never expires
+  }
 }
 
 # D17: the ack deadline is the visibility timeout; MAX_ATTEMPTS deliveries, then Pub/Sub forwards to the dead letter topic.
@@ -202,6 +216,23 @@ resource "google_secret_manager_secret" "auth_secret" {
   depends_on = [google_project_service.apis]
 }
 
+# The seed job never generates keys (its output goes to Cloud Logging): scripts/deploy.sh stores both values.
+resource "google_secret_manager_secret" "seed_api_key" {
+  secret_id = "hostmark-seed-api-key"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_secret_manager_secret" "seed_admin_api_key" {
+  secret_id = "hostmark-seed-admin-api-key"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.apis]
+}
+
 resource "google_secret_manager_secret" "hmac_access_id" {
   secret_id = "hostmark-s3-access-key-id"
   replication {
@@ -230,6 +261,13 @@ resource "google_secret_manager_secret_version" "hmac_secret" {
 
 resource "google_secret_manager_secret_iam_member" "runtime" {
   for_each  = local.runtime_secrets
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.runtime.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "seed" {
+  for_each  = local.seed_secrets
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.runtime.email}"
@@ -298,8 +336,8 @@ resource "google_cloud_run_v2_service" "worker" {
 
   template {
     service_account = google_service_account.runtime.email
-    # SIGTERM to SIGKILL: longer than the 60 s lease, so a job in flight can finish.
-    timeout = "3600s"
+    # No timeout: it bounds requests (here only /healthz), not shutdown. Cloud Run sends SIGKILL 10 s after SIGTERM
+    # whatever is set; the worker hands back the job it holds and exits before that (src/consumer.ts, src/shutdown.ts).
     scaling {
       min_instance_count = var.worker_instances
       max_instance_count = var.worker_instances
@@ -393,7 +431,7 @@ resource "google_cloud_run_v2_job" "scheduled" {
 
 # Migrations and the seed run as one-off jobs of the same image: `gcloud run jobs execute hostmark-migrate --wait`.
 resource "google_cloud_run_v2_job" "operator" {
-  for_each            = toset(["migrate", "seed"])
+  for_each            = local.operator_secrets
   name                = "hostmark-${each.key}"
   location            = var.region
   deletion_protection = false
@@ -410,19 +448,22 @@ resource "google_cloud_run_v2_job" "operator" {
         resources {
           limits = { cpu = "1", memory = "512Mi" }
         }
-        env {
-          name = "DATABASE_URL"
-          value_source {
-            secret_key_ref {
-              secret  = google_secret_manager_secret.database_url.secret_id
-              version = "latest"
+        dynamic "env" {
+          for_each = each.value
+          content {
+            name = env.key
+            value_source {
+              secret_key_ref {
+                secret  = env.value
+                version = "latest"
+              }
             }
           }
         }
       }
     }
   }
-  depends_on = [google_secret_manager_secret_iam_member.runtime]
+  depends_on = [google_secret_manager_secret_iam_member.runtime, google_secret_manager_secret_iam_member.seed]
 }
 
 resource "google_cloud_run_v2_job_iam_member" "scheduler" {
@@ -480,6 +521,10 @@ resource "google_compute_backend_service" "api" {
   custom_request_headers = ["X-Client-Ip: {client_ip_address}"]
 
   # The api marks /media and /f as cacheable and everything else as private or no-store, so the origin decides.
+  # No default_ttl, max_ttl or client_ttl: the API refuses them with USE_ORIGIN_HEADERS (the provider strips them on
+  # update for that reason). Cloud CDN then keeps a response for its s-maxage or max-age, capped by default at 30 days
+  # (2,592,000 s), and passes the origin Cache-Control to the client unchanged. So /media (max-age=31536000, immutable,
+  # D6) stays at most 30 days at the edge and a year in a browser; an unpublish or delete invalidates the edge (D100).
   cdn_policy {
     cache_mode = "USE_ORIGIN_HEADERS"
     cache_key_policy {

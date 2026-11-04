@@ -61,7 +61,8 @@ pipeline 128; the local and gcp images build with a frozen lockfile.
 ## Open: engineering
 
 1. Fix the "Open findings from verification" in `plan.md` for a platform before enabling it. They are listed per
-   platform (Vercel, GCP, all); the AWS ones are fixed (D210 to D214).
+   platform (Vercel, all, and the GCP Cloud login); the AWS ones are fixed (D210 to D214), the other GCP ones too
+   (D220 to D224).
 2. `deploy.yml` has no cloud login step and no `id-token: write` (D123). Railway, Fly and VPS have no
    `platform-deploy` script.
 3. Vercel: prove on the first deployment that a forged POST to `/api/queue` does not reach the handler.
