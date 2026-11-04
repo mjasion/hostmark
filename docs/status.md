@@ -69,7 +69,7 @@ pipeline 128; the local and gcp images build with a frozen lockfile.
    verified after E2" in `plan.md`.
 5. Preview cleanup for a missed `closed` event: no sweep exists (`adapters/cloudflare/pipeline/README.md`).
 6. Optional: drop the copy of about 80 lines in `adapters/gcp/src/runtime.ts` by giving `NodePlatform` a queue
-   factory (D185). Add a Postgres advisory lock so the scheduler can run more than one replica (D159).
+   factory (D185).
 7. E8 to E10 need real deployments. The evaluation framework for criteria A, C, D, G and H is not in this repository.
 
 Minor:

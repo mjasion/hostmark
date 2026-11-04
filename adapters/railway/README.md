@@ -80,9 +80,9 @@ Buckets cannot take the rule, see above.
 
 ## Scheduler
 
-`numReplicas: 1` and `overlapSeconds: 0`. The second matters: by default a new deploy starts before the old one stops,
-and for a few seconds two schedulers would run every job twice (D19, D56, D67). Never scale this service. `protect`
-is per process. A Postgres advisory lock would remove the rule; not implemented.
+`numReplicas: 1` and `overlapSeconds: 0`. Neither is needed for correctness any more: only the scheduler that holds
+the Postgres advisory lock runs the jobs, so the new deploy's scheduler waits until the old one stops (D204). They
+keep one idle connection fewer. The lock needs a direct or session-mode `DATABASE_URL`, not a transaction-mode pooler.
 
 ## Worker sizing and shutdown
 

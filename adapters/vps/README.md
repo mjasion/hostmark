@@ -62,9 +62,9 @@ unverified here.
 
 ## Scheduler
 
-Exactly one `scheduler` container (a compose service has one instance unless `deploy.replicas` is set; a test fails
-if it is). Do not run this stack on two
-servers against the same Redis and database: the schedule would run twice (D19, D56, D67).
+One `scheduler` container (a compose service has one instance unless `deploy.replicas` is set; a test fails if it
+is). A second scheduler, on this server or another against the same database, only waits: the one that holds the
+Postgres advisory lock runs the jobs (D204). The lock needs a direct or session-mode `DATABASE_URL`.
 
 ## Worker sizing
 

@@ -24,8 +24,8 @@ fly scale count api=1 worker=2 scheduler=1 -a <your-app-name>
 fly status -a <your-app-name>                    # scheduler must list exactly one machine
 ```
 
-`--ha=false` matters: without it Fly may start two machines per process group, and two schedulers run every job
-twice (see Scheduler). `release_command` runs the bucket setup (lifecycle), the migrations and the seed in a
+`--ha=false` keeps one machine per process group; a second scheduler machine only waits on the leader lock (see
+Scheduler). `release_command` runs the bucket setup (lifecycle), the migrations and the seed in a
 temporary machine before the machines are replaced. Optional: `OTLP_ENDPOINT` and `AUTH_SIGNUP_ENABLED`.
 
 ## Required variables
@@ -64,9 +64,9 @@ the S3 calls were run against MinIO only. Tigris and the standard CORS call: no 
 
 ## Scheduler
 
-Exactly one machine in the `scheduler` group. `fly.toml` cannot pin a machine count, so the rule is operational:
-`--ha=false` on deploy and `fly scale count scheduler=1`. Two schedulers would run each job twice (D19, D56, D67,
-`protect` is per process). A Postgres advisory lock would remove the rule; it is not implemented.
+One machine in the `scheduler` group is enough: `--ha=false` on deploy and `fly scale count scheduler=1`. A second
+machine is safe: only the scheduler that holds the Postgres advisory lock runs the jobs, the other takes over when
+that session ends (D204). The lock needs a direct or session-mode `DATABASE_URL`, not a transaction-mode pooler.
 
 ## Worker sizing
 

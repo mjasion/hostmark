@@ -151,7 +151,7 @@ services:
       redis:
         condition: service_healthy
 
-  # Exactly one scheduler: croner's protect works inside one process only, so a second replica runs every job twice.
+  # One scheduler. A second replica would only wait on the Postgres advisory lock (D204), so one is enough.
   # There is no `deploy.replicas` here on purpose; the compose test fails if one appears.
   scheduler:
     <<: *app

@@ -29,7 +29,7 @@ kill_timeout = 70
 [deploy]
   release_command = "sh -c 'node dist/init-bucket.js && node dist/migrate.js && node dist/seed.js'"
 
-# Three process groups, one image. `scheduler` must have exactly one machine (README).
+# Three process groups, one image. `scheduler` needs one machine; more only wait on the leader lock (README, D204).
 [processes]
   api = "node --enable-source-maps dist/api.js"
   worker = "node --enable-source-maps dist/worker.js"
