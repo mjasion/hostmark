@@ -144,6 +144,11 @@ need. Where Chromium launches on the host, `PLAYWRIGHT_BROWSERS_PATH=... pnpm --
 pnpm --filter @hostmark/adapter-local smoke
 ```
 
+The first step fails when the running stack does not match the tree: an `api`, `worker` or `scheduler` container
+that runs another image than `hostmark-local:dev`, or a source file that goes into the image and is newer than it
+(documentation, tests and `load/` do not count). Rebuild with `docker compose build && docker compose up -d`, or set
+`SMOKE_ALLOW_STALE=1` to report the mismatch and go on (D203).
+
 It reads `.env`, drives the stack through the typed client and checks: static pages and their `Cache-Control`, the
 `/app` rewrite, signup and login with a cookie followed by an upload, publish and `/f/:id` with OG tags, `/rum.js` and
 `POST /api/rum`, EXIF JPEG to `ready` with three WebP variants,

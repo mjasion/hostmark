@@ -74,7 +74,6 @@ pipeline 128; the local and gcp images build with a frozen lockfile.
 
 Minor:
 
-- Smoke runs whatever image exists and never builds (D132), so a stale image passes silently.
 - The CLAUDE.md note that the smoke test needs `BUILDX_CONFIG` predates D132; it may be stale.
 
 ## Notes for a new session
