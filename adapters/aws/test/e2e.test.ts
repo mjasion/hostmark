@@ -23,9 +23,12 @@ import { startEventSourceMapping } from './esm';
 // Needs all three stand-ins (README, "Tests"):
 //   DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55812/postgres
 //   S3_TEST_ENDPOINT=http://127.0.0.1:55810  SQS_TEST_ENDPOINT=http://127.0.0.1:55811
+//   S3_TEST_ACCESS_KEY and S3_TEST_SECRET_KEY as for the other S3 tests (default hostmark / hostmark-local-secret)
 const databaseUrl = process.env.DATABASE_URL;
 const s3Endpoint = process.env.S3_TEST_ENDPOINT;
 const sqsEndpoint = process.env.SQS_TEST_ENDPOINT;
+const accessKeyId = process.env.S3_TEST_ACCESS_KEY ?? 'hostmark';
+const secretAccessKey = process.env.S3_TEST_SECRET_KEY ?? 'hostmark-local-secret';
 const ready = Boolean(databaseUrl && s3Endpoint && sqsEndpoint);
 
 const API_KEY = 'e2e-api-key-0123456789abcdef';
@@ -68,8 +71,8 @@ describe.skipIf(!ready)('api app and worker on Postgres, MinIO and ElasticMQ', (
 
     const bucket = `e2e-${Date.now()}`;
     const s3 = new AwsClient({
-      accessKeyId: 'hostmark',
-      secretAccessKey: 'hostmark-aws-secret',
+      accessKeyId,
+      secretAccessKey,
       service: 's3',
       region: 'us-east-1',
     });
@@ -104,8 +107,8 @@ describe.skipIf(!ready)('api app and worker on Postgres, MinIO and ElasticMQ', (
       DATABASE_URL: dbUrl.toString(),
       BETTER_AUTH_SECRET: 'a-long-random-secret-for-the-e2e-0123456789',
       AWS_REGION: 'us-east-1',
-      AWS_ACCESS_KEY_ID: 'hostmark',
-      AWS_SECRET_ACCESS_KEY: 'hostmark-aws-secret',
+      AWS_ACCESS_KEY_ID: accessKeyId,
+      AWS_SECRET_ACCESS_KEY: secretAccessKey,
       S3_BUCKET: bucket,
       S3_ENDPOINT: s3Endpoint,
       SQS_QUEUE_URL: queueUrl,

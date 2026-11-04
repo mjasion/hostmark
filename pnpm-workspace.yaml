@@ -13,3 +13,11 @@ minimumReleaseAgeExclude:
   - bullmq@6.5.3
   - set-cookie-parser@3.2.2
   - "@cloudflare/workers-types@5.20261101.1"
+
+# Packages whose install scripts pnpm 12 may run (D201). Every other dependency with a build script fails a strict
+# install, so a new one is a visible change. Never replace this list with dangerouslyAllowAllBuilds.
+allowBuilds:
+  esbuild: true
+  msgpackr-extract: true
+  protobufjs: true
+  workerd: true

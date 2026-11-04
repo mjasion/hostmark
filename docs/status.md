@@ -31,7 +31,13 @@ After 744ec67 these ran again and passed:
 
 Load, platform and pipeline tests and Playwright were not rerun.
 
-Nothing has run on GitHub yet. The first `ci` run after a push has not been looked at.
+`ci` on GitHub failed on every run up to 7ebab6a: `pnpm install` stopped with `ERR_PNPM_IGNORED_BUILDS`, so lint
+and tests never ran there. Fixed by the build script allowlist (D201).
+
+Cloud session, 2026-11-04, on 7ebab6a with every stand-in running (Postgres 17, Redis, MinIO, ElasticMQ, Pub/Sub
+emulator): vitest 925 tests, 901 passed and 24 skipped (20 are capability skips of the queue and storage contracts,
+4 were `adapters/aws/test/e2e.test.ts`, which ignored `S3_TEST_SECRET_KEY` and is fixed); load 77, platform 13,
+pipeline 128; the local and gcp images build with a frozen lockfile.
 
 ## Open: owner decisions
 
@@ -70,7 +76,6 @@ Nothing has run on GitHub yet. The first `ci` run after a push has not been look
 Minor:
 
 - Smoke runs whatever image exists and never builds (D132), so a stale image passes silently.
-- Biome warns at `adapters/aws/scripts/template-check.ts:119`.
 - The CLAUDE.md note that the smoke test needs `BUILDX_CONFIG` predates D132; it may be stale.
 
 ## Notes for a new session

@@ -116,7 +116,7 @@ export function checkTemplate(template = loadTemplate()): string[] {
     []) as unknown as Node[];
   for (const prefix of ['originals/', 'variants/']) {
     const rule = rules.find((r) => r.Prefix === prefix);
-    if (!rule || rule.Status !== 'Enabled' || rule.ExpirationInDays !== 8)
+    if (rule?.Status !== 'Enabled' || rule.ExpirationInDays !== 8)
       problems.push(`No enabled 8 day lifecycle rule for ${prefix} (D74)`);
   }
 
