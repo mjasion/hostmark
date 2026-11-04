@@ -17,9 +17,14 @@ repository. [`plan.md`](plan.md) has the detail per stage; this file says what i
   scheduler (D204), the open findings of AWS, GCP, Vercel and all platforms (D205 to D208, D210 to D214, D220 to
   D224, D230 to D234), the GCP runtime on the shared one (D185), OIDC logins and deploy scripts for every Node
   platform (D240 to D245, D247), every dependency updated and `pnpm audit` clean (D248, D249).
+- Second part of that pull request, after a compliance review of every adapter against the spec and the platforms'
+  documentation: forged deliveries refused on the Vercel queue route (D235), a keepalive on quiet event streams
+  (D236), and the review's findings fixed for Cloudflare (D250 to D258), AWS (D260 to D269), Vercel (D270 to D279),
+  Railway, Fly and VPS (D280 to D289) and GCP (D290 to D299). The panel's known gaps from E1 are fixed, with
+  `robots.txt`, `noindex` on share pages, English dates and a favicon (D300 to D304).
 
 Commits: 081b1f0 (E0, E3a), 0837930 (E3, E4), cdc92e1 (E5, E7), 15ad2d6 (E6), 744ec67 (example auth secret refused on
-every Node platform, D104), then the pull request above (merged as one squashed commit).
+every Node platform, D104), then the pull request above (merged in 763365d).
 
 Last full gate, 2026-11-02, on the tree before 744ec67:
 
@@ -44,15 +49,16 @@ Cloud session, 2026-11-04, at the start, on 7ebab6a with every stand-in running 
 ElasticMQ, Pub/Sub emulator): vitest 925 tests, 901 passed and 24 skipped (20 capability skips of the queue and
 storage contracts, 4 in `adapters/aws/test/e2e.test.ts`, which ignored `S3_TEST_SECRET_KEY` and is fixed).
 
-Last full gate, same session, on the last commit of the pull request, with every stand-in running:
+Last full gate, same session, on 46af7fe (the last commit of the pull request), with every stand-in running:
 
-- vitest 1045 tests: 1020 passed and 25 skipped (capability skips of the queue and storage contracts).
-- load 77, platform 22, pipeline 128; typecheck; biome without errors or warnings; actionlint 1.7.12 clean.
+- vitest 1199 tests: 1175 passed and 24 skipped (capability skips of the queue and storage contracts).
+- load 78, platform 24, pipeline 133; typecheck; biome without errors or warnings; actionlint 1.7.12 clean.
 - `terraform validate` and `fmt -check` of `adapters/gcp/infra`; `pnpm check` of aws, gcp, vercel and cloudflare.
-- A clean `pnpm install --frozen-lockfile`; the local and gcp images build; `pnpm audit` finds nothing.
-- Smoke 16 of 16 on the compose stack (the new first step is the stale-image check); a second scheduler replica waited
-  and took over 5 s after the leader stopped.
-- Not run: Playwright and the load scenarios (E2), and anything against a cloud account.
+- A clean `pnpm install --frozen-lockfile`; the local image builds; `pnpm audit` found nothing at D249.
+- Smoke 16 of 16 on the compose stack, including the trace from `complete` to the worker; Playwright 4 of 4 in
+  `mcr.microsoft.com/playwright:v1.64.1-noble` with `--network host`. Earlier in the session a second scheduler
+  replica waited and took over 5 s after the leader stopped (D204).
+- Not run: the load scenarios (E2), and anything against a cloud account.
 - `ci` on GitHub green on every commit of the pull request after the first.
 
 ## Open: owner decisions
@@ -72,7 +78,10 @@ Last full gate, same session, on the last commit of the pull request, with every
   `bench-<platform>` environment limited to `main`, plus `BENCH_RUNNER_MODE` and `BENCH_BUDGETS_CONFIRMED`
   (`load/BENCHMARK.md`).
 - E4: required reviewers on the preview environment, and a separate Cloudflare account for previews (D145).
-- The secrets each adapter README lists, entered as GitHub Environment secrets.
+- The secrets each adapter README lists, entered as GitHub Environment secrets. New since the first part:
+  `GCP_STATE_BUCKET` (a versioned bucket made by hand, D247), `SEED_API_KEY` and `SEED_ADMIN_API_KEY` for Vercel
+  (D277), and optional OTLP endpoints and headers on AWS (D261), GCP (D290) and Vercel (D274).
+- Vercel: Function CPU "Performance" (4 GB) on Pro for a measured deployment (D271).
 
 ## Open: engineering
 
@@ -95,15 +104,9 @@ Last full gate, same session, on the last commit of the pull request, with every
    S3 behind CloudFront), so headers need a place in core and one per platform. A proposed approach is in the
    pull request of 2026-11-04; nothing is implemented. Owner's decision: HSTS `max-age=31536000` without
    `includeSubDomains` and without preload.
-8. Known gaps after E1 (`plan.md`, E1): the event stream outlives sign-out by up to 60 s; cancel during `complete`
-   does nothing; `/app/files/not-a-uuid` shows raw text and the friendly branch in `apps/web/src/auth.ts` is
-   unreachable; "Retry" is offered on refused files; a lazy thumbnail first scrolled to after its presigned URL
-   expired is unproven; generic 404s carry no `Cache-Control`; `/app/files/..%2f..%2fetc` shows a raw JSON 404; the
-   `.origin` and `AUTH_CLIENT_IP_HEADER` wiring of `adapters/local/src/runtime.ts` has no test of its own; a
-   `complete` left running by a signed-out user can answer 401 after the next user signed in and send that user to
-   `/login`; the test that upload errors other than a 401 keep the session covers a failed create only. Results
-   must also account for the three behaviours of the E0 review: worker memory under a sustained stream (D79),
-   `files.attempts` over-counting after an abandoned send, and a repeat killer using up a sibling's attempts (D64).
+8. The known gaps after E1 are fixed (D302 to D304). Results must still account for the three behaviours of the E0
+   review: worker memory under a sustained stream (D79), `files.attempts` over-counting after an abandoned send, and
+   a repeat killer using up a sibling's attempts (D64).
 9. Later after E2 (`plan.md`, E2): D79 still quotes concurrency 4 with a margin of about 300 MB (it was about
    400 MiB, and 3.7 GB was 3.6 GiB); D97 says a second process "doubles" throughput (it is 1.93 times, and the memory
    saved against concurrency 4 is small); `BASE_URL=http://[::1]:...` fails in setup with exit 107 because the
@@ -124,6 +127,10 @@ Last full gate, same session, on the last commit of the pull request, with every
       1.20261103.1 (D248).
     - N. Rollback and old-version cache entries are untested.
 
+12. Cloudflare does not meet acceptance criterion 3: Cloudflare's automatic traces are on, but the app's spans are
+    not exported from Workers, so there is no single trace from `complete` to `process_image` (D254). AWS (D261),
+    GCP (D290) and Vercel (D274) export OTLP when an endpoint is set; none of them has run on a platform.
+
 Minor:
 
 - The CLAUDE.md note that the smoke test needs `BUILDX_CONFIG` predates D132; it may be stale.
@@ -138,5 +145,9 @@ Minor:
 - Verification reports from the earlier sessions were not kept. What they found that is still open is in `plan.md`
   and in each adapter README under the facts that are not proven.
 - Do not deploy, run `terraform apply`, create cloud resources or enable a platform in `platforms.json` without the
-  owner's consent for that platform. On the owner's Mac commit to `main`; in a cloud session push to the session
-  branch and open a pull request. Never bypass commit signing.
+  owner's consent for that platform. On the owner's Mac commit to `main`; in a cloud session push to a branch and
+  open a pull request. Never bypass commit signing.
+- Parallel agents in git worktrees: `git stash` is shared by every worktree of a clone, so an agent must never
+  `stash pop` without naming its own entry. Each worktree holds a full `node_modules` (about 1 GB); remove merged
+  worktrees, and prune Docker build cache, before the disk fills. A full disk once stopped Tempo in the `lgtm`
+  container from storing traces until it was restarted, which looked like a telemetry regression in the smoke test.
