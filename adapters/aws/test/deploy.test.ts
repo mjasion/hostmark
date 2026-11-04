@@ -31,7 +31,11 @@ if (i >= 0) {
   // Stands for a deploy that takes minutes: the test signals the script meanwhile.
   if (process.env.FAKE_HANG) setInterval(() => {}, 1000);
 }
-if (args.includes('describe-stacks')) process.stdout.write('some-output-value\\n');
+// Answers an output query with "out-<OutputKey>".
+if (args.includes('describe-stacks')) {
+  const key = /OutputKey==\`([A-Za-z]+)\`/.exec(args[args.indexOf('--query') + 1])[1];
+  process.stdout.write('out-' + key + '\\n');
+}
 `;
 
 describe('deploy script', () => {
@@ -135,6 +139,73 @@ describe('deploy script', () => {
       Object.keys(Object.fromEntries(files[0].params.map((p: Param) => [p.ParameterKey, 1]))),
     ).not.toContain('DistributionId');
     expect(files[1].params.map((p: Param) => p.ParameterKey)).toContain('DistributionId');
+  });
+
+  /** Runs a real (fake aws) deploy and returns the parameters of the two passes, by key. */
+  const deployParams = (env: Record<string, string>) => {
+    writeFileSync(join(dir, 'aws'), FAKE_AWS);
+    rmSync(log, { force: true });
+    const r = run(['--skip-build', '--code-bucket', 'pkg'], { ...SECRETS, ...env });
+    expect(r.status, r.stderr).toBe(0);
+    const records = readFileSync(log, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l));
+    return {
+      argv: records.filter((x) => x.argv).map((x) => x.argv as string[]),
+      passes: records
+        .filter((x) => x.file)
+        .map(
+          (x) =>
+            Object.fromEntries(x.params.map((p: Param) => [p.ParameterKey, p.ParameterValue])) as Record<
+              string,
+              string
+            >,
+        ),
+    };
+  };
+
+  it('treats an empty variable as unset: deploy.yml gives a secret the environment lacks as ""', () => {
+    const { argv, passes } = deployParams({
+      PUBLIC_URL: '',
+      AWS_REGION: '',
+      HOSTMARK_REGION: '',
+      APP_VERSION: '',
+      OTLP_ENDPOINT: '',
+      AWS_CLOUDFRONT_ALIASES: '',
+    });
+    expect(passes).toHaveLength(2);
+    // Not "": the api would refuse to start with an empty PUBLIC_URL.
+    expect(passes[1]?.PublicUrl).toBe('https://out-PublicDomain');
+    expect(passes[1]?.DistributionId).toBe('out-DistributionId');
+    for (const p of passes) {
+      expect(p.HostmarkRegion).toBe('frankfurt');
+      expect(p.AppVersion).toMatch(/^[0-9a-f]{7,}$/);
+      expect(p).not.toHaveProperty('OtlpEndpoint');
+      expect(p).not.toHaveProperty('Aliases');
+    }
+    const deploys = argv.filter((a) => a.includes('deploy') && a.includes('cloudformation'));
+    for (const a of deploys) expect(a[a.indexOf('--region') + 1]).toBe('eu-central-1');
+  });
+
+  it('keeps a PUBLIC_URL that is set, and passes the optional parameters that are set', () => {
+    const { passes } = deployParams({
+      PUBLIC_URL: 'https://hostmark.example.com',
+      OTLP_ENDPOINT: 'https://otlp.example.com',
+      OTEL_EXPORTER_OTLP_HEADERS: 'authorization=Basic%20c2VjcmV0',
+      AWS_CLOUDFRONT_ALIASES: 'hostmark.example.com',
+      AWS_ACM_CERTIFICATE_ARN: 'arn:aws:acm:us-east-1:123456789012:certificate/abc',
+      AWS_API_RESERVED_CONCURRENCY: '50',
+    });
+    expect(passes[1]?.PublicUrl).toBe('https://hostmark.example.com');
+    for (const p of passes) {
+      expect(p.OtlpEndpoint).toBe('https://otlp.example.com');
+      expect(p.OtlpHeaders).toBe('authorization=Basic%20c2VjcmV0');
+      expect(p.Aliases).toBe('hostmark.example.com');
+      expect(p.AcmCertificateArn).toBe('arn:aws:acm:us-east-1:123456789012:certificate/abc');
+      expect(p.ApiReservedConcurrency).toBe('50');
+      expect(p).not.toHaveProperty('AlarmTopicArn');
+    }
   });
 
   it('removes the file and does not print secrets when aws fails', () => {

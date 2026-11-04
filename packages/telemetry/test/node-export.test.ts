@@ -140,3 +140,46 @@ it('flush exports the batched signals without a shutdown, and does nothing witho
   await expect(quiet.flush()).resolves.toBeUndefined();
   await quiet.shutdown();
 });
+
+it('flush sends the OTEL_EXPORTER_OTLP_HEADERS headers that the exporters read themselves (AWS, D261)', async () => {
+  trace.disable();
+  context.disable();
+  metrics.disable();
+  logs.disable();
+  const seen: Array<{ path: string; auth: string | undefined }> = [];
+  const server = createServer((req, res) => {
+    seen.push({ path: req.url ?? '', auth: req.headers.authorization });
+    req.resume();
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/x-protobuf');
+      res.end();
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  process.env.OTEL_EXPORTER_OTLP_HEADERS = 'authorization=Bearer%20flush-test';
+  try {
+    const sdk = startNodeTelemetry({
+      service: 'scheduler',
+      platform: 'local',
+      variant: 'portable',
+      imageImpl: 'wasm',
+      version: 'abc',
+      environment: 'test',
+      otlpEndpoint: `http://127.0.0.1:${port}`,
+    });
+    const t = createTelemetry('scheduler', { write: (l) => sdk.write(l) });
+    await withSpan(t.tracer, 'job', async () => {
+      t.metrics.jobsRetried.add(1);
+      t.logger.info('hello');
+    });
+    // The batch delay is 5 s and the metric interval 15 s: only the flush can have sent anything this soon.
+    await sdk.flush();
+    expect(seen.map((s) => s.path).sort()).toEqual(['/v1/logs', '/v1/metrics', '/v1/traces']);
+    expect(new Set(seen.map((s) => s.auth))).toEqual(new Set(['Bearer flush-test']));
+    await sdk.shutdown();
+  } finally {
+    delete process.env.OTEL_EXPORTER_OTLP_HEADERS;
+    server.close();
+  }
+});

@@ -9,12 +9,17 @@
 // SIGINT, SIGTERM and SIGHUP. They are never in argv and never printed.
 // The version (`x-version`, S14) is APP_VERSION, else the short commit of HEAD, else GITHUB_SHA; a deploy without one
 // is refused, so a deployment never reports `dev`.
+// An empty variable counts as unset: deploy.yml passes every secret that platforms.json names to every platform, and
+// GitHub gives a secret the environment does not hold as "" (PUBLIC_URL is a Vercel secret, for one).
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { constants, tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+
+/** The variable's value, or undefined when it is unset or empty. */
+const env = (name) => process.env[name] || undefined;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const adapter = resolve(here, '..');
@@ -24,7 +29,7 @@ const { values } = parseArgs({
   options: {
     stack: { type: 'string', default: 'hostmark' },
     'code-bucket': { type: 'string' },
-    region: { type: 'string', default: process.env.AWS_REGION ?? 'eu-central-1' },
+    region: { type: 'string', default: env('AWS_REGION') ?? 'eu-central-1' },
     'dry-run': { type: 'boolean', default: false },
     'skip-build': { type: 'boolean', default: false },
   },
@@ -33,15 +38,14 @@ const { values } = parseArgs({
 const dry = values['dry-run'];
 const stack = values.stack;
 const region = values.region;
-const codeBucket =
-  values['code-bucket'] ?? process.env.AWS_CODE_BUCKET ?? (dry ? '<code-bucket>' : undefined);
+const codeBucket = values['code-bucket'] || env('AWS_CODE_BUCKET') || (dry ? '<code-bucket>' : undefined);
 if (!codeBucket) {
   console.error(
     '--code-bucket or AWS_CODE_BUCKET (an existing S3 bucket for the packaged Lambda code) is required',
   );
   process.exit(2);
 }
-const missing = ['DATABASE_URL', 'BETTER_AUTH_SECRET', 'ORIGIN_SECRET'].filter((name) => !process.env[name]);
+const missing = ['DATABASE_URL', 'BETTER_AUTH_SECRET', 'ORIGIN_SECRET'].filter((name) => !env(name));
 if (missing.length && !dry) {
   console.error(`missing environment variables: ${missing.join(', ')}`);
   process.exit(2);
@@ -50,9 +54,9 @@ if (missing.length && !dry) {
 function commitVersion() {
   const git = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' });
   if (git.status === 0 && git.stdout.trim()) return git.stdout.trim();
-  return process.env.GITHUB_SHA?.slice(0, 7);
+  return env('GITHUB_SHA')?.slice(0, 7);
 }
-const appVersion = process.env.APP_VERSION || commitVersion() || (dry ? '<version>' : undefined);
+const appVersion = env('APP_VERSION') || commitVersion() || (dry ? '<version>' : undefined);
 if (!appVersion) {
   console.error('APP_VERSION is not set and no commit was found: the deployment would report version "dev"');
   process.exit(2);
@@ -115,13 +119,28 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'])
   });
 process.on('exit', removeScratch);
 
+/**
+ * Optional stack parameters, passed only when their variable is set and not empty. An omitted one is not sent at all;
+ * whether `aws cloudformation deploy` then keeps the stack's previous value or the template default was not checked,
+ * so set the variable on every deploy (README, "Optional parameters").
+ */
+const OPTIONAL = [
+  ['OtlpEndpoint', 'OTLP_ENDPOINT'],
+  ['OtlpHeaders', 'OTEL_EXPORTER_OTLP_HEADERS'],
+  ['Aliases', 'AWS_CLOUDFRONT_ALIASES'],
+  ['AcmCertificateArn', 'AWS_ACM_CERTIFICATE_ARN'],
+  ['AlarmTopicArn', 'AWS_ALARM_TOPIC_ARN'],
+  ['ApiReservedConcurrency', 'AWS_API_RESERVED_CONCURRENCY'],
+];
+
 async function deploy(extra) {
   const entries = [
-    ['DatabaseUrl', process.env.DATABASE_URL],
-    ['BetterAuthSecret', process.env.BETTER_AUTH_SECRET],
-    ['OriginSecret', process.env.ORIGIN_SECRET],
-    ['HostmarkRegion', process.env.HOSTMARK_REGION ?? 'frankfurt'],
+    ['DatabaseUrl', env('DATABASE_URL')],
+    ['BetterAuthSecret', env('BETTER_AUTH_SECRET')],
+    ['OriginSecret', env('ORIGIN_SECRET')],
+    ['HostmarkRegion', env('HOSTMARK_REGION') ?? 'frankfurt'],
     ['AppVersion', appVersion],
+    ...OPTIONAL.filter(([, name]) => env(name)).map(([key, name]) => [key, env(name)]),
     ...extra,
   ];
   if (!dry)
@@ -161,8 +180,8 @@ try {
     const rum = {
       HOSTMARK_PLATFORM: 'aws',
       HOSTMARK_VARIANT: 'portable',
-      HOSTMARK_TOPOLOGY: process.env.HOSTMARK_TOPOLOGY ?? 'single',
-      HOSTMARK_REGION: process.env.HOSTMARK_REGION ?? 'frankfurt',
+      HOSTMARK_TOPOLOGY: env('HOSTMARK_TOPOLOGY') ?? 'single',
+      HOSTMARK_REGION: env('HOSTMARK_REGION') ?? 'frankfurt',
     };
     await run('pnpm', ['--filter', '@hostmark/web', 'build'], { env: rum });
     await run('pnpm', ['--filter', '@hostmark/adapter-aws', 'build']);
@@ -186,9 +205,9 @@ try {
 
   // 3. Second pass: the functions learn the distribution id and the public URL (a Lambda environment cannot refer to
   //    the distribution that refers to the function, so the first pass cannot set them).
+  //    PublicDomain is the first of the Aliases, else the distribution's own domain.
   const distributionId = await output('DistributionId');
-  const domain = await output('DistributionDomain');
-  const publicUrl = process.env.PUBLIC_URL ?? `https://${domain}`;
+  const publicUrl = env('PUBLIC_URL') ?? `https://${await output('PublicDomain')}`;
   await deploy([
     ['DistributionId', distributionId],
     ['PublicUrl', publicUrl],

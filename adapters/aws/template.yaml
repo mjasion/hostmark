@@ -8,7 +8,9 @@ Parameters:
   DatabaseUrl:
     Type: String
     NoEcho: true
-    Description: PostgreSQL connection string of the shared database (D71).
+    Description: >-
+      PostgreSQL connection string of the shared database (D71): Neon's pooled URL (host with `-pooler`), because
+      every Lambda execution environment holds its own connection (README, "Database").
   BetterAuthSecret:
     Type: String
     NoEcho: true
@@ -31,7 +33,38 @@ Parameters:
   PublicUrl:
     Type: String
     Default: "https://example.invalid"
-    Description: Second deploy pass only; https://<distribution domain> (or a custom domain).
+    Description: >-
+      Second deploy pass only; https://<first of Aliases> with a custom domain, else https://<distribution domain>.
+  Aliases:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional custom domain(s) of the distribution (alternate domain names), comma separated, for example
+      `hostmark.example.com`. Needs AcmCertificateArn. DNS (a CNAME or alias to the distribution) is not managed here.
+  AcmCertificateArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws[a-z-]*:acm:us-east-1:[0-9]{12}:certificate/[0-9a-f-]+$"
+    ConstraintDescription: an ACM certificate ARN in us-east-1 (CloudFront reads viewer certificates only from there)
+    Description: Certificate covering every name of Aliases; required with Aliases and refused without it.
+  OtlpEndpoint:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^https?://.+$"
+    Description: >-
+      OTLP/HTTP base URL of the OTel backend (acceptance criterion 3), set as OTLP_ENDPOINT on the three functions.
+      Empty: nothing is exported, logs go to CloudWatch Logs only.
+  OtlpHeaders:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >-
+      OTEL_EXPORTER_OTLP_HEADERS of the three functions, for example `authorization=Basic%20<base64>` (key=value pairs,
+      comma separated, values URL-encoded). Usually carries the backend's token.
+  AlarmTopicArn:
+    Type: String
+    Default: ""
+    Description: Optional SNS topic that the dead letter queue alarm notifies; empty leaves the alarm without an action.
   AppVersion:
     Type: String
     Default: dev
@@ -59,6 +92,15 @@ Parameters:
     MinValue: 2
     MaxValue: 1000
     Description: Concurrent worker invocations from the queue. Each holds one database connection.
+  ApiReservedConcurrency:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    MaxValue: 1000
+    Description: >-
+      Reserved (and so maximum) concurrency of the api. Each execution environment holds one database connection, so
+      this bounds the api's connections (README, "Database"). Lambda keeps 100 of the account's concurrency unreserved:
+      the account limit must be at least this plus 100.
   AuthSignupEnabled:
     Type: String
     Default: "true"
@@ -72,6 +114,23 @@ Conditions:
   HasDistribution: !Not [!Equals [!Ref DistributionId, ""]]
   HasRegion: !Not [!Equals [!Ref HostmarkRegion, ""]]
   HasTopology: !Not [!Equals [!Ref HostmarkTopology, ""]]
+  HasCustomDomain: !Not [!Equals [!Ref Aliases, ""]]
+  HasOtlp: !Not [!Equals [!Ref OtlpEndpoint, ""]]
+  HasOtlpHeaders: !Not [!Equals [!Ref OtlpHeaders, ""]]
+  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, ""]]
+
+# A domain without a certificate, or a certificate without a domain, is refused before anything changes.
+Rules:
+  DomainNeedsCertificate:
+    RuleCondition: !Not [!Equals [!Ref Aliases, ""]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AcmCertificateArn, ""]]
+        AssertDescription: Aliases needs AcmCertificateArn (a us-east-1 certificate for those names).
+  CertificateNeedsDomain:
+    RuleCondition: !Not [!Equals [!Ref AcmCertificateArn, ""]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref Aliases, ""]]
+        AssertDescription: AcmCertificateArn is used only together with Aliases.
 
 Resources:
   # ---- Storage -------------------------------------------------------------------------------------------------
@@ -147,6 +206,27 @@ Resources:
         deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
         maxReceiveCount: 5
 
+  # F1 and the baseline alerts of the spec: "DLQ > 0". The alarm goes off for any one-minute period in which a message
+  # is visible in the dead letter queue and notifies AlarmTopicArn when one is given. How long SQS takes to publish the
+  # metric after a message arrives was not measured.
+  DeadLetterAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-dead-letter-queue"
+      AlarmDescription: A job failed for good and is in the dead letter queue (D17, F1).
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - { Name: QueueName, Value: !GetAtt DeadLetterQueue.QueueName }
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+      OKActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref AWS::NoValue]
+
   # ---- Functions -----------------------------------------------------------------------------------------------
   ApiLogGroup:
     Type: AWS::Logs::LogGroup
@@ -176,8 +256,14 @@ Resources:
               - Effect: Allow
                 Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
                 Resource: [!Sub "${Bucket.Arn}/originals/*", !Sub "${Bucket.Arn}/variants/*"]
-              # /api/health/deep sends HEAD for this key (packages/core). Without s3:ListBucket a missing key answers
-              # 403, not 404, so the deploy script writes the empty object and the role may only read it.
+              # Without s3:ListBucket, HEAD and GET of a missing key answer 403, not 404 (HeadObject and GetObject
+              # references), and core reads 403 as an error: `complete` before the PUT answered 500 instead of 409.
+              # No s3:prefix condition: S3 evaluates it on list requests only. It reveals key names of this private
+              # bucket to the function, nothing more.
+              - Effect: Allow
+                Action: "s3:ListBucket"
+                Resource: !GetAtt Bucket.Arn
+              # /api/health/deep sends HEAD for this key (packages/core); the deploy script writes it as an empty object.
               - Effect: Allow
                 Action: "s3:GetObject"
                 Resource: !Sub "${Bucket.Arn}/healthcheck/probe"
@@ -209,6 +295,10 @@ Resources:
               - Effect: Allow
                 Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
                 Resource: [!Sub "${Bucket.Arn}/originals/*", !Sub "${Bucket.Arn}/variants/*"]
+              # A missing original or variant must read as 404, not 403 (see ApiRole).
+              - Effect: Allow
+                Action: "s3:ListBucket"
+                Resource: !GetAtt Bucket.Arn
               # The event source mapping needs receive, delete and attributes; the handler changes the visibility
               # timeout to apply the backoff (D17) and may enqueue.
               - Effect: Allow
@@ -257,6 +347,8 @@ Resources:
       MemorySize: 1024
       # The upload progress stream (SSE) runs up to 60 s (D20).
       Timeout: 90
+      # One database connection per environment (src/runtime.ts): this caps the api's connections (README, "Database").
+      ReservedConcurrentExecutions: !Ref ApiReservedConcurrency
       Role: !GetAtt ApiRole.Arn
       LoggingConfig: { LogGroup: !Ref ApiLogGroup }
       Environment:
@@ -273,6 +365,8 @@ Resources:
           CLOUDFRONT_DISTRIBUTION_ID: !Ref DistributionId
           HOSTMARK_REGION: !If [HasRegion, !Ref HostmarkRegion, !Ref AWS::NoValue]
           HOSTMARK_TOPOLOGY: !If [HasTopology, !Ref HostmarkTopology, !Ref AWS::NoValue]
+          OTLP_ENDPOINT: !If [HasOtlp, !Ref OtlpEndpoint, !Ref AWS::NoValue]
+          OTEL_EXPORTER_OTLP_HEADERS: !If [HasOtlpHeaders, !Ref OtlpHeaders, !Ref AWS::NoValue]
 
   ApiUrl:
     Type: AWS::Lambda::Url
@@ -322,6 +416,8 @@ Resources:
           S3_BUCKET: !Ref Bucket
           SQS_QUEUE_URL: !Ref JobQueue
           CLOUDFRONT_DISTRIBUTION_ID: !Ref DistributionId
+          OTLP_ENDPOINT: !If [HasOtlp, !Ref OtlpEndpoint, !Ref AWS::NoValue]
+          OTEL_EXPORTER_OTLP_HEADERS: !If [HasOtlpHeaders, !Ref OtlpHeaders, !Ref AWS::NoValue]
 
   WorkerMapping:
     Type: AWS::Lambda::EventSourceMapping
@@ -356,11 +452,25 @@ Resources:
           S3_BUCKET: !Ref Bucket
           SQS_QUEUE_URL: !Ref JobQueue
           CLOUDFRONT_DISTRIBUTION_ID: !Ref DistributionId
+          OTLP_ENDPOINT: !If [HasOtlp, !Ref OtlpEndpoint, !Ref AWS::NoValue]
+          OTEL_EXPORTER_OTLP_HEADERS: !If [HasOtlpHeaders, !Ref OtlpHeaders, !Ref AWS::NoValue]
+
+  # EventBridge Scheduler invokes the function asynchronously, and Lambda retries a failed asynchronous invocation
+  # twice by default. MaximumRetryAttempts 0 keeps it at one run per tick (D19, D159); an event older than a minute is
+  # dropped rather than run late.
+  SchedulerInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref SchedulerFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 0
+      MaximumEventAgeInSeconds: 60
 
   # ---- Scheduler -----------------------------------------------------------------------------------------------
   # EventBridge Scheduler fires each schedule once, so there is exactly one run per tick whatever the number of
   # function instances; D56 makes an overlapping run harmless anyway. Cron fields: minutes hours day-of-month month
-  # day-of-week year, in UTC (the schedule's default time zone). The expressions mirror SCHEDULER_JOBS (D19).
+  # day-of-week year, in UTC (the schedule's default time zone). The expressions mirror SCHEDULER_JOBS (D19), with the
+  # increment written `0/n` as in the Scheduler documentation (`*/n` in the contract).
   SchedulerInvokeRole:
     Type: AWS::IAM::Role
     Properties:
@@ -382,7 +492,7 @@ Resources:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub "${AWS::StackName}-cleanup-expired"
-      ScheduleExpression: "cron(*/15 * * * ? *)"
+      ScheduleExpression: "cron(0/15 * * * ? *)"
       FlexibleTimeWindow: { Mode: "OFF" }
       Target:
         Arn: !GetAtt SchedulerFunction.Arn
@@ -394,7 +504,7 @@ Resources:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: !Sub "${AWS::StackName}-requeue-stuck"
-      ScheduleExpression: "cron(*/5 * * * ? *)"
+      ScheduleExpression: "cron(0/5 * * * ? *)"
       FlexibleTimeWindow: { Mode: "OFF" }
       Target:
         Arn: !GetAtt SchedulerFunction.Arn
@@ -506,6 +616,15 @@ Resources:
         HttpVersion: http2and3
         IPV6Enabled: true
         PriceClass: !Ref PriceClass
+        Aliases: !If [HasCustomDomain, !Split [",", !Ref Aliases], !Ref AWS::NoValue]
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - AcmCertificateArn: !Ref AcmCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        # No CustomErrorResponses: they apply to every behavior, so a 403 -> 404 rule for a missing static file (the
+        # OAC may read site/* but not list it) would also rewrite the api's 403s (origin secret, CSRF, ownership).
         Origins:
           - Id: site
             DomainName: !GetAtt Bucket.RegionalDomainName
@@ -518,8 +637,13 @@ Resources:
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               OriginSSLProtocols: [TLSv1.2]
-              # The SSE stream sends an event every second; Lambda ends it after 60 s (D20).
-              OriginReadTimeout: 60
+              # The response timeout is how long CloudFront waits for the first byte and then between two packets, not
+              # for the whole response. The SSE stream (D20) writes a status event when the status changes and a
+              # `: keepalive` comment after 15 s without a write (D236), and the server ends it after 60 s, so its
+              # longest gap is 15 s. 90 s is the api's function timeout: CloudFront does not cut a slow first byte that
+              # the function may still send, and an SSE stream outlasts its 60 s cap even without the keepalive. Values
+              # up to 120 s need no quota increase (CloudFormation CustomOriginConfig reference).
+              OriginReadTimeout: 90
             OriginCustomHeaders:
               - { HeaderName: x-hostmark-origin-secret, HeaderValue: !Ref OriginSecret }
         DefaultCacheBehavior:
@@ -558,6 +682,9 @@ Resources:
 Outputs:
   DistributionId: { Value: !Ref Distribution }
   DistributionDomain: { Value: !GetAtt Distribution.DomainName }
+  # The host of PublicUrl: the first custom domain, else the distribution's own domain. The deploy script reads it.
+  PublicDomain:
+    Value: !If [HasCustomDomain, !Select [0, !Split [",", !Ref Aliases]], !GetAtt Distribution.DomainName]
   BucketName: { Value: !Ref Bucket }
   QueueUrl: { Value: !Ref JobQueue }
   DeadLetterQueueUrl: { Value: !Ref DeadLetterQueue }
