@@ -39,6 +39,40 @@ storage-buckets, databases/redis, reference/regions). I did not read those pages
 5. Deploy. The pre-deploy command of `api` keeps or creates the bucket, applies the lifecycle rule and CORS, migrates
    and seeds, then the services start.
 
+## Deploy from GitHub Actions
+
+`pnpm platform deploy railway` (D70, D121) runs `scripts/deploy.mjs`: `railway up --ci --service <name>` from the
+repository root for `api`, `worker` and `scheduler`, in the order of `services.json`. Each call uploads the workspace
+(`.gitignore` applies), builds the image and waits for the deployment; a failure stops the rest with Railway's exit
+code, so `worker` and `scheduler` never start on a schema that `api` failed to migrate. Each service builds the image
+again (three builds per deploy). `--dry-run` prints the commands. `deploy.yml` installs Railway CLI 5.71.0 from its
+GitHub release and checks a pinned SHA-256 first (D242).
+
+Once, in Railway:
+
+1. The project, the three services named exactly `api`, `worker`, `scheduler`, the Redis service, the R2 bucket and
+   the variables, as in "Deploy steps" above. The Dockerfile path is a service setting, so `railway up` builds
+   `adapters/railway/Dockerfile` only if step 2 was done.
+2. Do not connect the services to the GitHub repository (or disconnect them). A connected service deploys on every
+   push to `main`, which D70 forbids; with the workflow, `railway up` is the only way in.
+3. Project settings, Tokens: create a **project token** for the environment to deploy (for example `production`).
+   It is scoped to that project and environment, so the script needs no project or environment id.
+
+In GitHub, environment `railway` (deployment branches: `main` only):
+
+| Secret          | Value                     |
+| --------------- | ------------------------- |
+| `RAILWAY_TOKEN` | the project token, step 3 |
+
+The application variables stay in Railway; the pipeline never sees them. The token reaches the CLI as its
+environment only, and the script scrubs it from the output (`test/deploy.test.ts`, with a fake `railway` that
+echoes it).
+
+Not proven (needs an account): that a project token may run `railway up --service` for each service; that `--ci`
+exits non-zero on a failed pre-deploy command or health check; that the upload of the repository root stays under
+Railway's size limit; that the service settings entered by hand (Dockerfile path, `overlapSeconds` 0, draining)
+apply to deployments made by `railway up`; build and deploy times.
+
 ## Required variables
 
 | Variable                                                               | Services           | Value                                                       |
@@ -103,7 +137,8 @@ deploy. Older environments resolve `*.railway.internal` over IPv6 only, which wo
 
 `pnpm --filter @hostmark/adapter-railway test` checks `services.json` (known keys, one scheduler with no overlap,
 worker memory and draining, the pre-deploy order bucket, migrate, seed, the health path, no secret), the client
-address header, and that the Dockerfile equals the local one apart from the adapter name. The port contracts run with
+address header, that the Dockerfile equals the local one apart from the adapter name, and the deploy script against
+a fake `railway` (commands, order, stop on failure, token never in argv or output, refusal without the token). The port contracts run with
 stand-ins (`REDIS_TEST_URL`, `S3_TEST_ENDPOINT`, see `adapters/local/README.md`). The image builds.
 No Railway tool or schema validates this adapter: the first version used `railway.json` files, which passed Railway's
 published JSON schema, and were dropped because that format is deprecated.

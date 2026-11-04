@@ -28,6 +28,43 @@ fly status -a <your-app-name>                    # scheduler must list exactly o
 Scheduler). `release_command` runs the bucket setup (lifecycle), the migrations and the seed in a
 temporary machine before the machines are replaced. Optional: `OTLP_ENDPOINT` and `AUTH_SIGNUP_ENABLED`.
 
+## Deploy from GitHub Actions
+
+`pnpm platform deploy fly` (D70, D121) runs `scripts/deploy.mjs` from the repository root:
+
+```sh
+flyctl deploy --config adapters/fly/fly.toml --dockerfile adapters/fly/Dockerfile --ha=false --yes .
+flyctl scale count api=1 worker=2 scheduler=1 --config adapters/fly/fly.toml --yes
+flyctl status --config adapters/fly/fly.toml
+```
+
+So the D159 rule is applied by every deploy: `--ha=false`, and the counts set again with exactly one scheduler. A
+failed deploy stops before the scale. `--dry-run` prints the commands. `deploy.yml` installs flyctl 0.5.3 from its
+GitHub release after checking the SHA-256 that the release publishes (D242).
+
+Once, with your own login: the steps above up to `fly secrets set` (app, Tigris, Upstash, secrets; `app` in
+`fly.toml` set to the app name), then a deploy token for that app only:
+
+```sh
+fly tokens create deploy -a <your-app-name> -x 2160h    # 90 days; prints the token once
+```
+
+In GitHub, environment `fly` (deployment branches: `main` only):
+
+| Secret          | Value                                           |
+| --------------- | ----------------------------------------------- |
+| `FLY_API_TOKEN` | the deploy token, including its `FlyV1 ` prefix |
+
+The application secrets stay in Fly (`fly secrets set`); the pipeline never sees them. flyctl reads the token from
+its environment; it is never an argument, and the script scrubs it from the output (`test/deploy.test.ts`, with a
+fake `flyctl` that echoes it).
+
+Not proven (needs an account): that a deploy token (`fly tokens create deploy`, "limited to managing a single app and
+its resources" in the flyctl help) may use the remote builder and run `scale count`; that `--dockerfile` with
+`--config` from another directory builds `adapters/fly/Dockerfile` with the repository root as context; that
+`--ha=false` and `scale count` leave exactly one scheduler machine after a redeploy (check `fly status`); build and
+release command times.
+
 ## Required variables
 
 | Variable                                                                                         | Source                                                                                                                       |
@@ -64,9 +101,10 @@ the S3 calls were run against MinIO only. Tigris and the standard CORS call: no 
 
 ## Scheduler
 
-One machine in the `scheduler` group is enough: `--ha=false` on deploy and `fly scale count scheduler=1`. A second
-machine is safe: only the scheduler that holds the Postgres advisory lock runs the jobs, the other takes over when
-that session ends (D204). The lock needs a direct or session-mode `DATABASE_URL`, not a transaction-mode pooler.
+One machine in the `scheduler` group is enough: `--ha=false` on deploy and `fly scale count scheduler=1`.
+`scripts/deploy.mjs` does both on every deploy (tested against a fake `flyctl`); a manual deploy must do them by hand.
+A second machine is safe: only the scheduler that holds the Postgres advisory lock runs the jobs, the other takes over
+when that session ends (D204). The lock needs a direct or session-mode `DATABASE_URL`, not a transaction-mode pooler.
 
 ## Worker sizing
 
@@ -80,7 +118,9 @@ instance). `kill_timeout = 70` gives a job time to finish on stop.
 `pnpm --filter @hostmark/adapter-fly test` parses `fly.toml` with `smol-toml` and checks: three process groups, only
 `api` behind `http_service`, a machine size per group with 4 GB for the worker, `WORKER_CONCURRENCY=1`, the release
 command order (bucket, migrate, seed), RUM build args from the closed lists and no secret in `[env]`; it also checks
-the Tigris variable mapping and that the Dockerfile equals the local one apart from the adapter name. The port
+the Tigris variable mapping and that the Dockerfile equals the local one apart from the adapter name. The deploy
+script runs against a fake `flyctl`: the commands, `--ha=false`, a count for exactly the process groups of `fly.toml`
+with one scheduler, stop on failure, the token never in argv or output, refusal without the token. The port
 contracts run with stand-ins (`REDIS_TEST_URL`, `S3_TEST_ENDPOINT`, see `adapters/local/README.md`).
 `flyctl config validate` was **not run**: it needs `flyctl auth login`, and this work uses no account. TOML syntax and
 the keys above are checked by the test, not against Fly's schema.

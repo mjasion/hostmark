@@ -244,7 +244,7 @@ confirmations. Nothing runs until a platform is enabled and deployed.
 
 Opus verification of the adapters on 2026-11-02 found nothing that blocks a commit with every platform off (the two
 GCP blockers are fixed, D200). All adapters stay `emulated`. The AWS items are fixed (D210 to D214), the Vercel
-items except the forged POST (D230 to D234), the GCP items except the Cloud login (D220 to D224) and the items for all
+items except the forged POST (D230 to D234), the GCP items (D220 to D224, the login D241) and the items for all
 platforms (D205 to D208); the items below are open.
 
 Before enabling Vercel:
@@ -252,7 +252,3 @@ Before enabling Vercel:
 - `api/queue.js` (`src/functions/queue.ts`) trusts every POST: `handleCallback` of `@vercel/queue` 0.10.0 checks no signature or token and takes the
   job from the request body. The only protection is the documented "no public URL" of consumer functions. Prove it on
   the first deployment: a forged `ce-type` POST to `/api/queue` must not reach the handler.
-
-Before enabling Google Cloud:
-
-- Add a Cloud login to `deploy.yml`.

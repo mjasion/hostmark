@@ -56,8 +56,64 @@ in the Lambda configuration (readable by anyone who may call `lambda:GetFunction
 Secrets Manager was not done. `prepare-database` prints the generated seed keys once, on purpose (D14), and only when
 they were generated. The way in from the repository is `pnpm platform deploy aws` (E3a, D70): it refuses unless `platforms.json` enables
 `aws` and sets every secret it names, then runs this package's `platform-deploy` script, which reads `AWS_CODE_BUCKET`
-instead of `--code-bucket`. The workflow `.github/workflows/deploy.yml` does not log in to AWS yet (no OIDC step), so
-a dispatch from there still fails at the first `aws` call until that step exists.
+instead of `--code-bucket`. From GitHub Actions, see the next section.
+
+### Deploy from GitHub Actions
+
+`deploy.yml` logs in with OIDC (`aws-actions/configure-aws-credentials` v6.3.0, D241): the job's GitHub token is
+exchanged for temporary credentials of `AWS_ROLE_ARN` in `AWS_REGION`; no access key is stored anywhere. The step
+runs for `aws` only, after the install, and only the deploy job may request the token. Then
+`pnpm platform deploy aws` runs `platform-deploy` with the `aws` CLI of the runner image.
+
+Once, in the AWS account (with your own login):
+
+1. IAM, Identity providers: add the OpenID Connect provider `https://token.actions.githubusercontent.com`, audience
+   `sts.amazonaws.com`.
+2. A role for the deploy whose trust policy admits this repository's `aws` environment only:
+
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Principal": { "Federated": "arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com" },
+         "Action": "sts:AssumeRoleWithWebIdentity",
+         "Condition": {
+           "StringEquals": {
+             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+             "token.actions.githubusercontent.com:sub": "repo:<owner>/<repo>:environment:aws"
+           }
+         }
+       }
+     ]
+   }
+   ```
+
+   A job that names an environment gets `sub` = `repo:<owner>/<repo>:environment:<name>`, without the branch. The
+   branch is limited by the environment: give `aws` the deployment branch rule `main` only (below); `deploy.yml`
+   also runs from `main` only.
+3. The role's permissions: what `cloudformation deploy` of `template.yaml` needs with `CAPABILITY_IAM` (Lambda, SQS,
+   S3, CloudFront, EventBridge Scheduler, IAM roles of the functions), `s3:PutObject` on the code bucket, `s3 sync` to
+   the content bucket and `cloudfront:CreateInvalidation`. A least-privilege policy was not worked out; a dedicated
+   account for the benchmark keeps the blast radius small.
+4. The code bucket (`AWS_CODE_BUCKET`), as in the prerequisites above.
+
+In GitHub, environment `aws` (deployment branches: `main` only):
+
+| Secret               | Value                                              |
+| -------------------- | -------------------------------------------------- |
+| `AWS_ROLE_ARN`       | ARN of the role of step 2                          |
+| `AWS_REGION`         | for example `eu-central-1`                         |
+| `AWS_CODE_BUCKET`    | the packaging bucket of step 4                     |
+| `DATABASE_URL`       | Neon connection string                             |
+| `BETTER_AUTH_SECRET` | 32+ characters                                     |
+| `ORIGIN_SECRET`      | 32+ characters, random                             |
+| `PUBLIC_URL`         | optional; without it the CloudFront domain is used |
+
+Not proven (needs an account): the trust policy against a real token, the permissions of step 3, a deploy from the
+runner (the `aws` CLI version of the image, the two passes, the sync and the invalidation), the session length (one
+hour by default) against the deploy time.
 
 Tear down: empty `s3://<bucket>` (versions are not enabled) and `aws cloudformation delete-stack --stack-name hostmark`.
 Cost: Lambda, SQS, Scheduler and the first 1000 invalidation paths a month are inside the free tiers; CloudFront data

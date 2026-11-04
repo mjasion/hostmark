@@ -117,6 +117,66 @@ after DNS resolves. Seed with `gcloud run jobs execute hostmark-seed --wait` (se
 the load balancer forwarding rule, two always-on worker instances, one always-on api instance, Cloud CDN egress,
 Pub/Sub and storage. Do not run it without the owner's decision to deploy this platform.
 
+## Deploy from GitHub Actions
+
+`deploy.yml` logs in with OIDC through Workload Identity Federation (`google-github-actions/auth` v3.0.0, D241): the
+job's GitHub token is exchanged for a short-lived token of `GCP_SERVICE_ACCOUNT`; no key file exists. The action
+writes an external-account credentials file (`gha-creds-*.json`, ignored by git and by the Docker build context) and
+exports `GOOGLE_APPLICATION_CREDENTIALS` and `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`, which gcloud, Terraform and the
+Docker credential helper read in place of `gcloud auth application-default login`. Then `setup-gcloud` (gcloud
+590.0.1) and `setup-terraform` (Terraform 1.17.1, wrapper off) run, all for `gcp` only and after the install, and
+`pnpm platform deploy gcp` runs `scripts/deploy.sh`.
+
+**Terraform state and approval (D247):** the state lives in the bucket named by the environment secret
+`GCP_STATE_BUCKET` (prefix `hostmark/gcp`), which you create once by hand, with versioning on and access for
+`GCP_SERVICE_ACCOUNT` only: `gcloud storage buckets create gs://<bucket> --location <region>
+--uniform-bucket-level-access` and `gcloud storage buckets update gs://<bucket> --versioning`. `deploy.sh` writes a
+`gcs` backend override for that run only, so `infra/` keeps the local backend on a workstation unless you set
+`GCP_STATE_BUCKET` there too (do, once a deploy from Actions has happened, or the two states diverge). In CI the apply
+runs with `-auto-approve`: the environment's reviewers are the approval, so add required reviewers to the `gcp`
+environment. Without the bucket the script refuses to run in CI.
+
+Once, in the project (with your own login; `<owner>/<repo>` is this repository):
+
+```sh
+gcloud iam service-accounts create hostmark-deploy --project "$GCP_PROJECT"
+gcloud iam workload-identity-pools create github --project "$GCP_PROJECT" --location global
+gcloud iam workload-identity-pools providers create-oidc hostmark --project "$GCP_PROJECT" --location global \
+  --workload-identity-pool github --issuer-uri https://token.actions.githubusercontent.com \
+  --attribute-mapping 'google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref,attribute.environment=assertion.environment' \
+  --attribute-condition "assertion.repository == '<owner>/<repo>' && assertion.ref == 'refs/heads/main' && assertion.environment == 'gcp'"
+gcloud iam service-accounts add-iam-policy-binding "hostmark-deploy@${GCP_PROJECT}.iam.gserviceaccount.com" \
+  --project "$GCP_PROJECT" --role roles/iam.workloadIdentityUser \
+  --member "principalSet://iam.googleapis.com/projects/<project-number>/locations/global/workloadIdentityPools/github/attribute.repository/<owner>/<repo>"
+gcloud iam workload-identity-pools providers describe hostmark --project "$GCP_PROJECT" --location global \
+  --workload-identity-pool github --format 'value(name)'     # the value of GCP_WORKLOAD_IDENTITY_PROVIDER
+```
+
+The attribute condition admits only tokens of this repository, from `main`, in the `gcp` environment; the binding
+lets only this repository impersonate the account. The account then needs the roles that `deploy.sh` and `infra/`
+use: enabling APIs, Artifact Registry, Cloud Run, Pub/Sub, Cloud Storage with HMAC keys, Secret Manager, Cloud
+Scheduler, the load balancer and certificate, service accounts, a custom role and project IAM bindings. A
+least-privilege list was not worked out; a dedicated project with `roles/owner` on this account is the simple
+choice, and the attribute condition is what limits who can use it.
+
+In GitHub, environment `gcp` (deployment branches: `main` only):
+
+| Secret                           | Value                                                                                |
+| -------------------------------- | ------------------------------------------------------------------------------------ |
+| `GCP_PROJECT`                    | project id                                                                           |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | `projects/<number>/locations/global/workloadIdentityPools/github/providers/hostmark` |
+| `GCP_SERVICE_ACCOUNT`            | `hostmark-deploy@<project>.iam.gserviceaccount.com`                                  |
+| `DOMAIN`                         | host name of the load balancer                                                       |
+| `DATABASE_URL`                   | shared Postgres                                                                      |
+| `BETTER_AUTH_SECRET`             | 32+ characters                                                                       |
+
+The provider and the account are identifiers, not credentials; they are secrets so that every name of
+`platforms.json` lives in one place and `pnpm platform check gcp` covers them (D241).
+
+Not proven (needs a project): the pool, the provider and the condition against a real token; that gcloud, Terraform's
+Google provider and `docker push` through `gcloud auth configure-docker` all accept the external-account credentials;
+the roles of the account; the whole deploy from a runner (blocked, see above).
+
 ## Required variables
 
 | Variable                                   | Where                       | Meaning                                                                  |

@@ -61,10 +61,11 @@ pipeline 128; the local and gcp images build with a frozen lockfile.
 ## Open: engineering
 
 1. Fix the "Open findings from verification" in `plan.md` for a platform before enabling it. They are listed per
-   platform. Open: the GCP Cloud login (item 2) and the forged POST to the Vercel queue route (item 3); the rest
+   platform. Open: the forged POST to the Vercel queue route (item 3); the rest
    is fixed (AWS D210 to D214, GCP D220 to D224, Vercel D230 to D234, all platforms D205 to D208).
-2. `deploy.yml` has no cloud login step and no `id-token: write` (D123). Railway, Fly and VPS have no
-   `platform-deploy` script.
+2. The OIDC logins of AWS and GCP and the deploy scripts of Railway, Fly and VPS exist (D240 to D245, D247) but
+   have not run against an account. Before the first dispatch the owner creates what the "Deploy from GitHub
+   Actions" section of each adapter README lists.
 3. Vercel: prove on the first deployment that a forged POST to `/api/queue` does not reach the handler.
 4. E2: rerun everything on a clean, quiet machine (about 47 minutes), then the behaviours and spot-checks under "Not
    verified after E2" in `plan.md`.

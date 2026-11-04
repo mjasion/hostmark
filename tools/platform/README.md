@@ -19,8 +19,15 @@ pnpm platform matrix [name] [--exclude <name>]   # GitHub Actions matrix of enab
 by itself; `deploy.yml` leaves Cloudflare out (D123), so a `platform-deploy` script in `adapters/cloudflare` would not
 open a second route. `deploy.yml` runs from `main` only, because a branch carries its own `platforms.json`.
 
-**Not wired in `deploy.yml` yet:** a cloud login step and `id-token: write` (nothing assumes `AWS_ROLE_ARN`, and
-`adapters/gcp/scripts/deploy.sh` needs Application Default Credentials), and a `platform-deploy` script in every adapter
-except `aws` and `gcp`. A dispatch for such a platform ends in a failed job and deploys nothing.
+**Logins and tools in `deploy.yml`** (D241, D242): AWS and GCP log in with OIDC (`id-token: write` on the deploy
+job only); Railway CLI and flyctl are downloaded at a pinned version and checked against a pinned SHA-256; each of
+these steps runs only in the job of its platform and after the install. Every adapter except `cloudflare` and `local`
+has a `platform-deploy` script. The Railway, Fly and VPS scripts share `exec.mjs` (D240): required variables,
+secrets passed as environment or as `0600` files, never as arguments, and output scrubbed line by line.
+
+gcp keeps its Terraform state in `GCP_STATE_BUCKET` and applies without a prompt in CI (D247).
+
+The READMEs of `aws`, `gcp`, `railway`, `fly` and `vps` have a "Deploy from GitHub Actions" section: the environment
+secrets, the setup on the platform side and what is not proven.
 
 Tests: `pnpm test:platform`.
