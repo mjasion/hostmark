@@ -5,10 +5,12 @@
 // scrubbed from everything flyctl prints. The app is the `app` of fly.toml.
 // `--ha=false` and the count below are the rule of D159: Fly cannot pin a machine count in fly.toml, so every deploy
 // sets it again, and the scheduler group has exactly one machine.
+// The image gets APP_VERSION as a build argument (D281): APP_VERSION, else 12 characters of the commit of HEAD, so
+// `x-version` changes with every deploy (S14). The Dockerfile turns the argument into the runtime variable.
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { main, requireEnv, run, scrubber } from '../../../tools/platform/exec.mjs';
+import { appVersion, main, requireEnv, run, scrubber } from '../../../tools/platform/exec.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const { values } = parseArgs({ options: { 'dry-run': { type: 'boolean', default: false } } });
@@ -20,13 +22,11 @@ const config = ['--config', 'adapters/fly/fly.toml'];
 
 await main(async () => {
   const { FLY_API_TOKEN } = dry ? { FLY_API_TOKEN: '' } : requireEnv(['FLY_API_TOKEN']);
+  const version = appVersion({ cwd: root });
   const options = { cwd: root, scrub: scrubber([FLY_API_TOKEN]), dry };
   // The build context is the repository root: the image needs the whole workspace.
-  await run(
-    'flyctl',
-    ['deploy', ...config, '--dockerfile', 'adapters/fly/Dockerfile', '--ha=false', '--yes', '.'],
-    options,
-  );
+  const build = ['--dockerfile', 'adapters/fly/Dockerfile', '--build-arg', `APP_VERSION=${version}`];
+  await run('flyctl', ['deploy', ...config, ...build, '--ha=false', '--yes', '.'], options);
   const counts = Object.entries(COUNT).map(([group, count]) => `${group}=${count}`);
   await run('flyctl', ['scale', 'count', ...counts, ...config, '--yes'], options);
   await run('flyctl', ['status', ...config], options);

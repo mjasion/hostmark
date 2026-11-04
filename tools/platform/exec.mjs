@@ -1,7 +1,7 @@
 // Shared by the platform-deploy scripts of adapters/railway, adapters/fly and adapters/vps (D240). Plain ESM, no
 // dependency. A secret reaches a CLI as its environment or as a 0600 file, never as an argument, and every line a CLI
 // prints passes through a scrubber before it is shown.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -88,6 +88,33 @@ export function run(
         );
     });
   });
+}
+
+/**
+ * The version a deployment reports in `x-version` (S14, D281): `APP_VERSION` when set, else the first 12 characters
+ * of the commit of HEAD in `cwd` (the stamp of the VPS deploy), else of `GITHUB_SHA`. Throws (exit 2) when there is
+ * none, so a deployment never reports `dev`, and refuses a value that is not a plain token, since it becomes an
+ * argument of the platform CLI.
+ */
+export function appVersion({ cwd, env = process.env }) {
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  const commit = head.status === 0 ? head.stdout.trim() : '';
+  const version =
+    env.APP_VERSION?.trim() ||
+    (/^[0-9a-f]{40,64}$/.test(commit) ? commit.slice(0, 12) : '') ||
+    env.GITHUB_SHA?.trim().slice(0, 12);
+  if (!version)
+    throw new DeployError(
+      'APP_VERSION is not set and no commit was found: the deployment would report "dev"',
+      2,
+    );
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(version))
+    throw new DeployError('APP_VERSION must be letters, digits, ".", "_" or "-" (at most 64)', 2);
+  return version;
 }
 
 /** A fresh 0700 directory for secret files; `remove` deletes it with everything in it. */

@@ -13,6 +13,7 @@ const services = ['api', 'worker', 'scheduler'] as const;
 const knownKeys = [
   'startCommand',
   'preDeployCommand',
+  'preDeployTimeoutSeconds',
   'numReplicas',
   'healthcheckPath',
   'healthcheckTimeout',
@@ -74,6 +75,14 @@ describe('services.json', () => {
 
   it('gates the api rollout on /api/health', () => {
     expect(config.services.api.healthcheckPath).toBe('/api/health');
+  });
+
+  it('caps the pre-deploy command, which otherwise has no time limit (D283)', () => {
+    expect(config.services.api.preDeployTimeoutSeconds).toBe(600);
+  });
+
+  it('places every service, and Redis, in Amsterdam, the Railway region nearest Frankfurt and its database (D283)', () => {
+    expect(config.region).toBe('europe-west4-drams3a');
   });
 
   it('holds no secret: variables are set in Railway', () => {

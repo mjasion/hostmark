@@ -1,7 +1,33 @@
 import assert from 'node:assert/strict';
-import { existsSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { DeployError, privateDir, requireEnv, run, scrubber } from './exec.mjs';
+import { appVersion, DeployError, privateDir, requireEnv, run, scrubber } from './exec.mjs';
+
+test('appVersion takes APP_VERSION, else 12 characters of HEAD, else of GITHUB_SHA (D281)', () => {
+  const cwd = new URL('.', import.meta.url).pathname;
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).stdout.trim();
+  assert.equal(appVersion({ cwd, env: { APP_VERSION: ' v1.2-rc_3 ' } }), 'v1.2-rc_3');
+  assert.equal(appVersion({ cwd, env: {} }), head.slice(0, 12));
+  const outside = mkdtempSync(join(tmpdir(), 'hostmark-no-git-'));
+  try {
+    const sha = 'abcdef0123456789abcdef0123456789abcdef01';
+    assert.equal(appVersion({ cwd: outside, env: { GITHUB_SHA: sha } }), 'abcdef012345');
+    assert.throws(
+      () => appVersion({ cwd: outside, env: {} }),
+      (e) => e instanceof DeployError && e.code === 2 && /would report "dev"/.test(e.message),
+    );
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+  for (const bad of ['-x', 'a b', 'a;b', `v${'1'.repeat(64)}`])
+    assert.throws(
+      () => appVersion({ cwd, env: { APP_VERSION: bad } }),
+      (e) => e instanceof DeployError && e.code === 2,
+    );
+});
 
 test('requireEnv names every missing or empty variable and exits 2', () => {
   assert.deepEqual(requireEnv(['A'], { A: '1' }), { A: '1' });

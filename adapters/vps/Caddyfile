@@ -5,6 +5,11 @@
 	# images alone, and the WebP variants are compressed already.
 	encode zstd gzip
 	reverse_proxy api:8080 {
+		# A deploy recreates the one api container; until the new one listens, a failed dial is retried every
+		# 250 ms for up to 15 s instead of answering 502 at once (D286). A request other than GET is retried only when
+		# the connection could not be opened, so none reaches the api twice.
+		lb_try_duration 15s
+		lb_try_interval 250ms
 		# header_up without a prefix replaces whatever the client sent. {remote_host} is the TCP peer (IP only).
 		# Behind Cloudflare the peer is Cloudflare: set the value to {http.request.header.CF-Connecting-IP}
 		# instead, and only then (README, "Cloudflare in front").

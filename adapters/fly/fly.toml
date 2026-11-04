@@ -1,5 +1,5 @@
 # Deploy from the repository root (README): the image needs the whole workspace.
-#   fly deploy --config adapters/fly/fly.toml --dockerfile adapters/fly/Dockerfile --ha=false .
+#   fly deploy --config adapters/fly/fly.toml --dockerfile adapters/fly/Dockerfile --build-arg APP_VERSION=<sha> --ha=false .
 # The app name is global on Fly: change it before the first `fly launch --no-deploy --copy-config`.
 app = "hostmark-fly"
 primary_region = "fra"
@@ -26,8 +26,13 @@ kill_timeout = 70
 
 # Runs in a temporary machine of the new image before the machines are replaced: bucket and lifecycle (D74), schema,
 # seed keys. All three are idempotent.
+# bluegreen (D282): a new machine boots beside each old one, and traffic moves only once the new machines pass their
+# health checks, so the single api machine is not taken down before its successor answers (S14). Fly requires at least
+# one health check for this strategy; the api has one, worker and scheduler have none. Old and new workers and
+# schedulers overlap briefly: the queue and the leader lock (D204) cover that.
 [deploy]
   release_command = "sh -c 'node dist/init-bucket.js && node dist/migrate.js && node dist/seed.js'"
+  strategy = "bluegreen"
 
 # Three process groups, one image. `scheduler` needs one machine; more only wait on the leader lock (README, D204).
 [processes]
@@ -43,6 +48,20 @@ kill_timeout = 70
   auto_start_machines = false
   min_machines_running = 1
   processes = ["api"]
+
+  # Load is counted in HTTP requests, which Fly recommends for web services (the proxy pools connections). One api
+  # machine takes S6 (500 rps): with p99 under 1 s that is under 500 requests in flight, plus SSE streams that stay
+  # open up to 60 s each (D20). The hard limit stays well above that, so the proxy never sheds load the app could
+  # take; the soft limit only steers traffic once there is more than one api machine (D282).
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 1000
+
+  # An SSE stream lasts up to 60 s (D20) and writes at least every 15 s (keepalive, D236). 75 keeps a margin even for
+  # a stream without the keepalive. Fly documents the key, not its default or unit; seconds, as in its example (600).
+  [http_service.http_options]
+    idle_timeout = 75
 
   [[http_service.checks]]
     method = "GET"

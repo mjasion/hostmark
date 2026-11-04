@@ -35,6 +35,20 @@ describe('fly.toml', () => {
     expect(config.http_service.checks[0].path).toBe('/api/health');
   });
 
+  it('counts requests, with a hard limit far above S6 and SSE, and a softer one below it (D282)', () => {
+    const c = config.http_service.concurrency;
+    expect(c.type).toBe('requests');
+    expect(c.soft_limit).toBeLessThan(c.hard_limit);
+    expect(c.hard_limit).toBeGreaterThanOrEqual(500);
+    // SSE streams stay open up to 60 s (D20); the idle timeout stays above that, keepalive or not (D236).
+    expect(config.http_service.http_options.idle_timeout).toBeGreaterThan(60);
+  });
+
+  it('deploys blue-green, which needs the api health check (D282)', () => {
+    expect(config.deploy.strategy).toBe('bluegreen');
+    expect(config.http_service.checks.length).toBeGreaterThan(0);
+  });
+
   it('gives every process group a machine size, the worker 4 GB for its 3.2 GiB peak (D79)', () => {
     const byGroup = new Map<string, { memory: string }>();
     for (const vm of config.vm) for (const group of vm.processes) byGroup.set(group, vm);

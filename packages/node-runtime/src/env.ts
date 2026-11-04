@@ -16,6 +16,8 @@ export const envSchema = z.object({
   S3_REGION: z.string().min(1).default('us-east-1'),
   S3_ACCESS_KEY_ID: z.string().min(1),
   S3_SECRET_ACCESS_KEY: z.string().min(1),
+  /** `true`: virtual-hosted-style S3 URLs, the bucket in the host name (Tigris, D280). Default path-style (MinIO). */
+  S3_VIRTUAL_HOST: z.enum(['true', 'false']).default('false'),
   /** OTLP/HTTP base URL. Empty disables export. */
   OTLP_ENDPOINT: z.string().default(''),
   PORT: z.coerce.number().int().min(1).max(65535).default(8080),

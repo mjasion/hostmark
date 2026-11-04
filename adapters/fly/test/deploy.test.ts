@@ -9,6 +9,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 const script = fileURLToPath(new URL('../scripts/deploy.mjs', import.meta.url));
 const root = resolve(dirname(script), '../../..');
 const TOKEN = 'FlyV1 fm2_deploy-token-0123456789abcdefghij';
+const HEAD = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).stdout.trim();
 
 // A fake `flyctl` that records argv, cwd and whether the token arrived as environment, and can leak or fail.
 const FAKE = `#!/usr/bin/env node
@@ -43,11 +44,12 @@ describe('fly deploy script', () => {
       .map((l) => JSON.parse(l) as { argv: string[]; cwd: string; token: string | null });
 
   it('deploys from the repository root with --ha=false, then pins the machine counts', () => {
-    const r = run([], { FLY_API_TOKEN: TOKEN });
+    const r = run([], { FLY_API_TOKEN: TOKEN, APP_VERSION: 'v42' });
     expect(r.status, r.stderr).toBe(0);
     const config = ['--config', 'adapters/fly/fly.toml'];
+    const build = ['--dockerfile', 'adapters/fly/Dockerfile', '--build-arg', 'APP_VERSION=v42'];
     expect(records().map((x) => x.argv)).toEqual([
-      ['deploy', ...config, '--dockerfile', 'adapters/fly/Dockerfile', '--ha=false', '--yes', '.'],
+      ['deploy', ...config, ...build, '--ha=false', '--yes', '.'],
       ['scale', 'count', 'api=1', 'worker=2', 'scheduler=1', ...config, '--yes'],
       ['status', ...config],
     ]);
@@ -55,6 +57,20 @@ describe('fly deploy script', () => {
       expect(rec.cwd).toBe(root);
       expect(rec.token).toBe(TOKEN);
     }
+  });
+
+  it('stamps the image with 12 characters of the commit when APP_VERSION is unset (S14, D281)', () => {
+    expect(HEAD).toMatch(/^[0-9a-f]{40}/);
+    const r = run([], { FLY_API_TOKEN: TOKEN });
+    expect(r.status, r.stderr).toBe(0);
+    const deploy = records()[0]?.argv ?? [];
+    expect(deploy[deploy.indexOf('--build-arg') + 1]).toBe(`APP_VERSION=${HEAD.slice(0, 12)}`);
+  });
+
+  it('refuses an APP_VERSION that is not a plain token, before calling flyctl', () => {
+    const r = run([], { FLY_API_TOKEN: TOKEN, APP_VERSION: '--yes; rm' });
+    expect(r.status).toBe(2);
+    expect(existsSync(log)).toBe(false);
   });
 
   it('sets a count for exactly the process groups of fly.toml, and one scheduler (D159)', () => {
@@ -94,6 +110,7 @@ describe('fly deploy script', () => {
     const r = run(['--dry-run'], {});
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toMatch(/\$ flyctl scale count api=1 worker=2 scheduler=1/);
+    expect(r.stdout).toContain(`--build-arg APP_VERSION=${HEAD.slice(0, 12)}`);
     expect(existsSync(log)).toBe(false);
   });
 });

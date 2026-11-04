@@ -18,6 +18,11 @@ const dry = values['dry-run'];
 
 const NAMES = ['VPS_HOST', 'VPS_SSH_USER', 'VPS_SSH_KEY', 'VPS_SSH_KNOWN_HOSTS'];
 const RELEASES_KEPT = 3;
+/**
+ * Seconds a wait of `docker compose up --wait` may take: a one-shot job (minio-user, minio-init, migrate, seed) or a
+ * health check. The image build is not counted.
+ */
+const WAIT_TIMEOUT_SECONDS = 600;
 
 /** Refuses values that ssh could read as an option or that are not what the name says, before anything runs. */
 function validate({ VPS_HOST, VPS_SSH_USER, VPS_SSH_KEY, VPS_SSH_KNOWN_HOSTS }) {
@@ -51,9 +56,24 @@ function remoteScript(commit) {
     'rm -rf "$release"',
     'mv "$release.partial" "$release"',
     'cd "$release/adapters/vps"',
-    `APP_VERSION=${version} docker compose --env-file "$base/.env" up -d --build --wait --remove-orphans`,
+    // One Caddyfile path for every release (D285): a bind mount whose source moves with the release would make
+    // Compose recreate Caddy, and drop connections, on every deploy. `cat >` rewrites the file in place, so the
+    // mounted inode stays, and the reload below loads it (Caddy ignores a reload with an unchanged config).
+    'cat Caddyfile > "$base/Caddyfile"',
+    `export APP_VERSION=${version} CADDYFILE="$base/Caddyfile"`,
+    // `--wait` alone waits without limit; a health check that never passes must fail the deploy (D286).
+    `docker compose --env-file "$base/.env" up -d --build --wait --wait-timeout ${WAIT_TIMEOUT_SECONDS} --remove-orphans`,
+    'docker compose --env-file "$base/.env" exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile',
     'ln -sfn "$release" "$base/current"',
     `cd "$base/releases" && ls -1t | tail -n +${RELEASES_KEPT + 1} | xargs -r rm -rf --`,
+    // Images of releases that were removed (D289): each deploy builds a new hostmark-vps:<version>. The images of the
+    // kept releases stay for a manual rollback; one still used by a container is kept with a note.
+    `keep="$(ls -1 | cut -c1-12)"`,
+    `docker image ls --format '{{.Tag}}' hostmark-vps | while read -r tag; do`,
+    '  case "$tag" in "" | "<none>") continue ;; esac',
+    '  printf \'%s\\n\' "$keep" | grep -qxF -- "$tag" && continue',
+    '  docker image rm "hostmark-vps:$tag" >/dev/null || echo "kept hostmark-vps:$tag: still in use" >&2',
+    'done',
   ].join('\n');
 }
 

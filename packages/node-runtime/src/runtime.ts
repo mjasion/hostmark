@@ -26,6 +26,7 @@ export function createStorage(env: RuntimeEnv) {
     region: env.S3_REGION,
     accessKeyId: env.S3_ACCESS_KEY_ID,
     secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+    virtualHost: env.S3_VIRTUAL_HOST === 'true',
   });
 }
 

@@ -1,13 +1,26 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 const script = fileURLToPath(new URL('../scripts/deploy.mjs', import.meta.url));
 const root = resolve(dirname(script), '../../..');
 const COMMIT = '0123456789abcdef0123456789abcdef01234567';
+const read = (name: string) => readFileSync(new URL(`../${name}`, import.meta.url), 'utf8');
 
 // Not a real key: the script checks the PEM frame only, and the fake ssh compares bytes.
 const KEY = [
@@ -116,10 +129,129 @@ describe('vps deploy script', () => {
     expect(remote).toMatch(/^set -eu\n/);
     expect(remote).toContain(`release="$base/releases/${COMMIT}"`);
     expect(remote).toContain('tar -xzf - -C "$release.partial"');
+    expect(remote).toContain(`export APP_VERSION=${COMMIT.slice(0, 12)} CADDYFILE="$base/Caddyfile"`);
     expect(remote).toContain(
-      `APP_VERSION=${COMMIT.slice(0, 12)} docker compose --env-file "$base/.env" up -d --build --wait --remove-orphans`,
+      'docker compose --env-file "$base/.env" up -d --build --wait --wait-timeout 600 --remove-orphans',
     );
     expect(remote).toMatch(/if \[ ! -f "\$base\/\.env" \]; then .* exit 3; fi/);
+  });
+
+  describe('the remote script, run in a shell with a fake docker (D285, D286, D289)', () => {
+    const OLD = ['111111111111', '222222222222', '333333333333', '444444444444'];
+    let home: string;
+    let tarball: string;
+    beforeAll(() => {
+      // A real archive with the two files the remote script reads, and a fake docker that logs and lists images.
+      const src = mkdtempSync(join(tmpdir(), 'hm-vps-src-'));
+      mkdirSync(join(src, 'adapters/vps'), { recursive: true });
+      writeFileSync(join(src, 'adapters/vps/Caddyfile'), read('Caddyfile'));
+      writeFileSync(join(src, 'adapters/vps/docker-compose.yml'), read('docker-compose.yml'));
+      tarball = join(dir, 'source.tar.gz');
+      expect(spawnSync('tar', ['-czf', tarball, '-C', src, 'adapters']).status).toBe(0);
+      rmSync(src, { recursive: true, force: true });
+      writeFileSync(
+        join(dir, 'docker'),
+        `#!/bin/sh
+printf '%s\\n' "{\\"argv\\":\\"$*\\",\\"cwd\\":\\"$PWD\\",\\"version\\":\\"$APP_VERSION\\",\\"caddyfile\\":\\"$CADDYFILE\\"}" >> "$FAKE_DOCKER_LOG"
+if [ -n "$FAKE_DOCKER_FAIL" ]; then exit 1; fi
+if [ "$1" = image ] && [ "$2" = ls ]; then printf '%s\\n' $FAKE_TAGS '<none>'; fi
+if [ "$1" = image ] && [ "$2" = rm ] && [ "$3" = "hostmark-vps:$FAKE_IN_USE" ]; then exit 1; fi
+exit 0
+`,
+      );
+      chmodSync(join(dir, 'docker'), 0o755);
+    });
+    beforeEach(() => {
+      home = mkdtempSync(join(tmpdir(), 'hm-vps-home-'));
+      mkdirSync(join(home, 'hostmark/releases'), { recursive: true });
+      writeFileSync(join(home, 'hostmark/.env'), 'S3_BUCKET=hostmark\n');
+      // Four earlier releases, oldest first: after this deploy the newest two of them and the new one are kept.
+      OLD.forEach((v, i) => {
+        const release = join(home, `hostmark/releases/${v}${'0'.repeat(28)}`);
+        mkdirSync(release);
+        utimesSync(release, 1_000_000 + i, 1_000_000 + i);
+      });
+    });
+    afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+    const remote = (env: Record<string, string> = {}) => {
+      run([], ENV);
+      const dockerLog = join(home, 'docker.jsonl');
+      const r = spawnSync('sh', ['-c', sshCall().argv.at(-1) ?? ''], {
+        encoding: 'utf8',
+        input: readFileSync(tarball),
+        env: {
+          HOME: home,
+          PATH: `${dir}:/usr/bin:/bin`,
+          FAKE_DOCKER_LOG: dockerLog,
+          FAKE_TAGS: [...OLD, COMMIT.slice(0, 12), 'dev'].join(' '),
+          ...env,
+        },
+      });
+      const calls = existsSync(dockerLog)
+        ? readFileSync(dockerLog, 'utf8')
+            .trim()
+            .split('\n')
+            .map((l) => JSON.parse(l) as { argv: string; cwd: string; version: string; caddyfile: string })
+        : [];
+      return { r, calls };
+    };
+
+    it('starts the release with one Caddyfile path for every release, then reloads Caddy', () => {
+      const { r, calls } = remote();
+      expect(r.status, r.stderr).toBe(0);
+      const caddyfile = join(home, 'hostmark/Caddyfile');
+      expect(readFileSync(caddyfile, 'utf8')).toBe(read('Caddyfile'));
+      const [up, reload] = calls;
+      expect(up?.argv).toBe(
+        `compose --env-file ${home}/hostmark/.env up -d --build --wait --wait-timeout 600 --remove-orphans`,
+      );
+      expect(up?.cwd).toBe(join(home, `hostmark/releases/${COMMIT}/adapters/vps`));
+      expect(up?.version).toBe(COMMIT.slice(0, 12));
+      expect(up?.caddyfile).toBe(caddyfile);
+      expect(reload?.argv).toBe(
+        `compose --env-file ${home}/hostmark/.env exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile`,
+      );
+      expect(reload?.caddyfile).toBe(caddyfile);
+      expect(readlinkSync(join(home, 'hostmark/current'))).toBe(join(home, `hostmark/releases/${COMMIT}`));
+    });
+
+    it('rewrites the Caddyfile in place, so the file Caddy has mounted changes too', () => {
+      const caddyfile = join(home, 'hostmark/Caddyfile');
+      writeFileSync(caddyfile, 'old config\n');
+      const inode = statSync(caddyfile).ino;
+      expect(remote().r.status).toBe(0);
+      expect(statSync(caddyfile).ino).toBe(inode);
+      expect(readFileSync(caddyfile, 'utf8')).toBe(read('Caddyfile'));
+    });
+
+    it('keeps three releases and removes the images of the others, not those of the kept ones', () => {
+      const { r, calls } = remote();
+      expect(r.status, r.stderr).toBe(0);
+      const releases = readdirSync(join(home, 'hostmark/releases')).map((d) => d.slice(0, 12));
+      expect(releases.sort()).toEqual([OLD[2], OLD[3], COMMIT.slice(0, 12)].sort());
+      const removed = calls.filter((c) => c.argv.startsWith('image rm')).map((c) => c.argv);
+      expect(removed).toEqual([
+        `image rm hostmark-vps:${OLD[0]}`,
+        `image rm hostmark-vps:${OLD[1]}`,
+        'image rm hostmark-vps:dev',
+      ]);
+    });
+
+    it('goes on when an old image is still in use, and says so', () => {
+      const { r, calls } = remote({ FAKE_IN_USE: OLD[0] ?? '' });
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stderr).toContain(`kept hostmark-vps:${OLD[0]}: still in use`);
+      expect(calls.filter((c) => c.argv.startsWith('image rm'))).toHaveLength(3);
+    });
+
+    it('stops before linking when compose fails, and keeps the old releases', () => {
+      const { r, calls } = remote({ FAKE_DOCKER_FAIL: '1' });
+      expect(r.status).not.toBe(0);
+      expect(calls).toHaveLength(1);
+      expect(existsSync(join(home, 'hostmark/current'))).toBe(false);
+      expect(readdirSync(join(home, 'hostmark/releases'))).toHaveLength(5);
+    });
   });
 
   it('hands the key and the host key over as 0600 files in a 0700 directory, removed afterwards', () => {
