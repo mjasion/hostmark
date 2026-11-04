@@ -1,7 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { createClient, DLQ_NAME, MAX_ATTEMPTS, QUEUE_NAME } from '@hostmark/contract';
+import {
+  API_CSP,
+  createClient,
+  DLQ_NAME,
+  HTML_SECURITY_HEADERS,
+  htmlCsp,
+  MAX_ATTEMPTS,
+  QUEUE_NAME,
+} from '@hostmark/contract';
 import { seed } from '@hostmark/db';
 import { createNodeDb, migrate } from '@hostmark/db/node';
+import { STYLE_HASHES } from '@hostmark/pages/styles';
 import type { Miniflare } from 'miniflare';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -36,6 +45,7 @@ describe.skipIf(!databaseUrl)(
     let closeShim: () => void;
     let dropDb: () => Promise<void>;
     let client: ReturnType<typeof createClient>;
+    let shimOrigin: string;
 
     beforeAll(async () => {
       const base = new URL(databaseUrl as string);
@@ -56,6 +66,7 @@ describe.skipIf(!databaseUrl)(
       let bucket: Awaited<ReturnType<Miniflare['getR2Bucket']>> | undefined;
       const shim = await presignEndpoint(async () => bucket as NonNullable<typeof bucket>);
       closeShim = () => void shim.server.close();
+      shimOrigin = shim.origin;
 
       const vars = {
         ENVIRONMENT: 'staging',
@@ -74,6 +85,17 @@ describe.skipIf(!databaseUrl)(
           hyperdrives: { HYPERDRIVE: url.toString() },
           r2Buckets: { BUCKET: 'hostmark-files' },
           queueProducers: { QUEUE: QUEUE_NAME },
+          // The asset server's answer for the shell; the Worker adds the HTML headers of D310.
+          serviceBindings: {
+            ASSETS: async (request: Request) =>
+              new Response(new URL(request.url).pathname === '/app/' ? '<!doctype html>shell' : 'miss', {
+                status: new URL(request.url).pathname === '/app/' ? 200 : 404,
+                headers: {
+                  'content-type': 'text/html; charset=utf-8',
+                  'cache-control': 'public, max-age=300',
+                },
+              }),
+          },
         }),
         builtWorker('consumer', {
           name: 'consumer',
@@ -115,6 +137,41 @@ describe.skipIf(!databaseUrl)(
       expect(res.headers.get('content-type')).toMatch(/^text\/plain/);
       const text = await res.text();
       expect(text).toMatch(/Apache License|BSD 3-Clause|Redistribution and use/);
+    });
+
+    it('sends the security headers of D310 on the shell, the API and its own answers', async () => {
+      const common = {
+        'x-content-type-options': 'nosniff',
+        'referrer-policy': 'strict-origin-when-cross-origin',
+      };
+      for (const path of ['/app/files/x', '/login', '/signup/', '/app']) {
+        const res = await mf.dispatchFetch(`${PUBLIC_URL}${path}`);
+        expect(await res.text(), path).toBe('<!doctype html>shell');
+        expect(Object.fromEntries(res.headers), path).toMatchObject({
+          ...common,
+          ...HTML_SECURITY_HEADERS,
+          // R2_PUBLIC_ENDPOINT replaces the account origin here, as it does for the presigned URLs.
+          'content-security-policy': htmlCsp({
+            storageOrigin: new URL(shimOrigin).origin,
+            styleHashes: STYLE_HASHES,
+          }),
+          'cache-control': 'public, max-age=300',
+        });
+        // PUBLIC_URL is plain http in this test.
+        expect(res.headers.get('strict-transport-security'), path).toBeNull();
+      }
+      const api = await mf.dispatchFetch(`${PUBLIC_URL}/api/health`);
+      expect(Object.fromEntries(api.headers)).toMatchObject({
+        ...common,
+        'content-security-policy': API_CSP,
+      });
+      const licences = await mf.dispatchFetch(`${PUBLIC_URL}/THIRD-PARTY-LICENSES.txt`);
+      await licences.arrayBuffer();
+      expect(Object.fromEntries(licences.headers)).toMatchObject(common);
+      const missing = await mf.dispatchFetch(`${PUBLIC_URL}/media/${randomUUID()}/128.webp`);
+      await missing.arrayBuffer();
+      expect(missing.status).toBe(404);
+      expect(Object.fromEntries(missing.headers)).toMatchObject(common);
     });
 
     it('answers the deep health check: Postgres through Hyperdrive and the R2 binding', async () => {

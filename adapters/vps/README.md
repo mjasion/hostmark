@@ -111,6 +111,11 @@ visitor would share three sign-ins per 10 s. Change the Caddy line to
 `header_up X-Client-Ip {http.request.header.CF-Connecting-IP}` and allow only Cloudflare's address ranges on ports 80
 and 443 (firewall), because the header is otherwise client-controlled. Not tested here.
 
+## Security headers (D310)
+
+The app sends them, HSTS included because `PUBLIC_URL` is https (D311). The Caddyfile adds no response header, so
+nothing is sent twice; a test keeps it that way. Answers Caddy makes itself (a 502 after the retry window) carry none.
+
 ## MinIO users (D287)
 
 The app does not sign with the MinIO root pair. `minio-user` (the MinIO image, which ships `mc`) creates the policy

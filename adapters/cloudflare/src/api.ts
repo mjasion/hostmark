@@ -1,11 +1,12 @@
 import { cache, WorkerEntrypoint } from 'cloudflare:workers';
-import { createApp } from '@hostmark/core';
-import type { Bindings } from './env';
+import { createApp, htmlSecurityHeaders, isHttps, withSecurityHeaders } from '@hostmark/core';
+import { type Bindings, varsSchema } from './env';
 import { closeAfter, startupFailure, withOwnTraceId } from './http';
 import { getImageProcessor } from './images';
 import { LICENSES_PATH, licensesResponse } from './licenses';
 import { createWorkersCachePurger, type PurgeResult, type PurgeTarget, purgeCache } from './purge';
 import { createScope, type Scope } from './runtime';
+import { r2PresignedOrigin } from './storage';
 
 /** Routes of the single page app: they all serve the same shell (see apps/web, D88). */
 const isShellRoute = (path: string) => {
@@ -66,15 +67,51 @@ export class Media extends WorkerEntrypoint<Bindings> {
 
 type Exports = { Media: Fetcher & PurgeTarget };
 
+/** The vars the shell's headers need; a full parse would also demand the secrets, which the shell does not use. */
+const shellVars = varsSchema.pick({
+  PUBLIC_URL: true,
+  R2_ACCOUNT_ID: true,
+  R2_BUCKET_NAME: true,
+  R2_PUBLIC_ENDPOINT: true,
+});
+
+/**
+ * The panel shell with the HTML headers of D310. The asset server adds the common set from `_headers` (`/*`); the
+ * policy is set here because it names the origin of the presigned URLs, which only the Worker's vars know exactly
+ * (a preview build has no account id, D241). `_headers` has no rule for `/app/`, so nothing is joined twice (D251).
+ */
+async function shell(request: Request, env: Bindings, assets: Fetcher): Promise<Response> {
+  const vars = shellVars.safeParse(env);
+  if (!vars.success)
+    return startupFailure(
+      new Error(`shell: invalid ${vars.error.issues.map((i) => i.path.join('.')).join(', ')}`),
+    );
+  const headers = htmlSecurityHeaders({
+    https: isHttps(request, vars.data.PUBLIC_URL),
+    storageOrigin: r2PresignedOrigin({
+      accountId: vars.data.R2_ACCOUNT_ID,
+      bucketName: vars.data.R2_BUCKET_NAME,
+      publicEndpoint: vars.data.R2_PUBLIC_ENDPOINT,
+    }),
+  });
+  const asset = await assets.fetch(new Request(new URL('/app/', request.url), request));
+  const response = new Response(asset.body, asset);
+  for (const [name, value] of Object.entries(headers)) response.headers.set(name, value);
+  return response;
+}
+
 export default {
   async fetch(request: Request, env: Bindings, ctx: ExecutionContext): Promise<Response> {
     const { Media: media } = ctx.exports as unknown as Exports;
     const url = new URL(request.url);
-    if (url.pathname === LICENSES_PATH && request.method === 'GET') return licensesResponse();
+    // D310: answers built here get the common set as well; core's own answers already carry it.
+    const secured = (response: Response) =>
+      withSecurityHeaders(response, request, typeof env.PUBLIC_URL === 'string' ? env.PUBLIC_URL : undefined);
+    if (url.pathname === LICENSES_PATH && request.method === 'GET') return secured(licensesResponse());
     if (isCacheable(request.method, url.pathname)) return withOwnTraceId(await media.fetch(request));
     if (env.ASSETS && (request.method === 'GET' || request.method === 'HEAD') && isShellRoute(url.pathname)) {
-      return env.ASSETS.fetch(new Request(new URL('/app/', url), request));
+      return secured(await shell(request, env, env.ASSETS));
     }
-    return handle(request, env, ctx, media);
+    return secured(await handle(request, env, ctx, media));
   },
 } satisfies ExportedHandler<Bindings>;

@@ -13,17 +13,17 @@ function's role credentials (it gained an optional `sessionToken` for that, D192
 
 ## Layout
 
-| Part      | AWS service                                                                                                            |
-| --------- | ---------------------------------------------------------------------------------------------------------------------- |
-| edge      | CloudFront: default behavior = S3 origin (web app, OAC), `/api/*` = Lambda URL, `/media/*`, `/f/*` = Lambda URL cached |
-| api       | Lambda (nodejs22.x, arm64, 1024 MB, 90 s, reserved concurrency 100) behind a function URL, `RESPONSE_STREAM` (SSE)     |
-| worker    | Lambda (4096 MB, 60 s) from SQS, batch size 1, `ReportBatchItemFailures`, max concurrency 10                           |
-| queue     | SQS standard queue, visibility timeout 360 s, redrive to a DLQ after 5 receives                                        |
-| scheduler | EventBridge Scheduler: 3 schedules, each invokes the scheduler Lambda with `{"job":"<name>"}`                          |
-| files     | one S3 bucket: `originals/`, `variants/` (8 day lifecycle, D74) and `site/` (the web app)                              |
-| purge     | CloudFront `CreateInvalidation` (D100)                                                                                 |
-| alerts    | CloudWatch alarm on visible messages in the DLQ > 0, optionally notifying `AlarmTopicArn` (SNS)                        |
-| telemetry | optional OTLP/HTTP export to `OtlpEndpoint`, flushed before each invocation returns; logs in CloudWatch                |
+| Part      | AWS service                                                                                                                                                                    |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| edge      | CloudFront: default behavior = S3 origin (web app, OAC), `/api/*` = Lambda URL, `/media/*`, `/f/*` = Lambda URL cached; security headers from response headers policies (D317) |
+| api       | Lambda (nodejs22.x, arm64, 1024 MB, 90 s, reserved concurrency 100) behind a function URL, `RESPONSE_STREAM` (SSE)                                                             |
+| worker    | Lambda (4096 MB, 60 s) from SQS, batch size 1, `ReportBatchItemFailures`, max concurrency 10                                                                                   |
+| queue     | SQS standard queue, visibility timeout 360 s, redrive to a DLQ after 5 receives                                                                                                |
+| scheduler | EventBridge Scheduler: 3 schedules, each invokes the scheduler Lambda with `{"job":"<name>"}`                                                                                  |
+| files     | one S3 bucket: `originals/`, `variants/` (8 day lifecycle, D74) and `site/` (the web app)                                                                                      |
+| purge     | CloudFront `CreateInvalidation` (D100)                                                                                                                                         |
+| alerts    | CloudWatch alarm on visible messages in the DLQ > 0, optionally notifying `AlarmTopicArn` (SNS)                                                                                |
+| telemetry | optional OTLP/HTTP export to `OtlpEndpoint`, flushed before each invocation returns; logs in CloudWatch                                                                        |
 
 ## Deploy steps (owner, with an AWS account)
 

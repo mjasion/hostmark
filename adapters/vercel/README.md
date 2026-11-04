@@ -26,7 +26,9 @@ pnpm platform deploy vercel
 
 It runs this package's `platform-deploy` script (`scripts/deploy.mjs`, `--dry-run` prints the commands and runs none):
 `check-config.ts`, then `vercel env add NAME production` for each variable (value on stdin), `vercel pull`,
-`vercel build --prod` (which runs `scripts/build.ts`, see "Layout"), `scripts/prepare-database.ts` (migrations and
+`scripts/security-headers.ts` (a temporary copy of `vercel.json` with the HTML Content-Security-Policy, whose storage
+origin comes from `S3_PUBLIC_ENDPOINT` or `S3_ENDPOINT` and `S3_BUCKET`, D316), `vercel build --prod --local-config
+<that copy>` (which runs `scripts/build.ts`, see "Layout"), `scripts/prepare-database.ts` (migrations and
 seed, D277), `vercel deploy --prebuilt --prod`. Needs the `vercel` CLI, `VERCEL_TOKEN`, `VERCEL_ORG_ID` and
 `VERCEL_PROJECT_ID` (the CLI reads them from the environment) and the variables below. `deploy.yml` installs
 `vercel@65.9.0` (an exact version, released 2026-10-31) in the vercel job after the dependency install and before any
@@ -113,20 +115,20 @@ verified), else `git rev-parse --short HEAD` of the checkout that runs `vercel b
 
 ## Required variables
 
-| Variable                                                 | Secret    | Where used                                                                        |
-| -------------------------------------------------------- | --------- | --------------------------------------------------------------------------------- |
-| `PUBLIC_URL`                                             | no        | auth base URL, links                                                              |
-| `DATABASE_URL`                                           | yes       | Postgres (postgres.js, pool of 5 per instance); also the deploy's migrations      |
-| `BETTER_AUTH_SECRET`                                     | yes       | at least 32 characters                                                            |
-| `CRON_SECRET`                                            | yes       | at least 16 characters; Vercel sends it as `Authorization: Bearer` to cron routes |
-| `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION` (default `auto`) | no        | R2                                                                                |
-| `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`               | yes       | R2 token                                                                          |
-| `S3_PUBLIC_ENDPOINT`                                     | no        | optional, host used in presigned URLs                                             |
-| `QUEUE_TOPIC`                                            | no        | default `image-jobs`; `vercel.json` hard codes the same name                      |
-| `OTLP_ENDPOINT`                                          | no        | OTLP/HTTP collector; empty: JSON log lines only ("Telemetry")                     |
-| `SEED_API_KEY`, `SEED_ADMIN_API_KEY`                     | yes       | deploy only, the seed keys (D14, D277); not stored on the project                 |
-| `HOSTMARK_REGION`, `APP_VERSION`                         | no        | optional; override the region and version baked in by the build                   |
-| `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`     | token yes | CLI in CI only                                                                    |
+| Variable                                                 | Secret    | Where used                                                                                                             |
+| -------------------------------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_URL`                                             | no        | auth base URL, links                                                                                                   |
+| `DATABASE_URL`                                           | yes       | Postgres (postgres.js, pool of 5 per instance); also the deploy's migrations                                           |
+| `BETTER_AUTH_SECRET`                                     | yes       | at least 32 characters                                                                                                 |
+| `CRON_SECRET`                                            | yes       | at least 16 characters; Vercel sends it as `Authorization: Bearer` to cron routes                                      |
+| `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION` (default `auto`) | no        | R2                                                                                                                     |
+| `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`               | yes       | R2 token                                                                                                               |
+| `S3_PUBLIC_ENDPOINT`                                     | no        | optional, host used in presigned URLs; set it for the deploy, not only on the project (the HTML policy names it, D316) |
+| `QUEUE_TOPIC`                                            | no        | default `image-jobs`; `vercel.json` hard codes the same name                                                           |
+| `OTLP_ENDPOINT`                                          | no        | OTLP/HTTP collector; empty: JSON log lines only ("Telemetry")                                                          |
+| `SEED_API_KEY`, `SEED_ADMIN_API_KEY`                     | yes       | deploy only, the seed keys (D14, D277); not stored on the project                                                      |
+| `HOSTMARK_REGION`, `APP_VERSION`                         | no        | optional; override the region and version baked in by the build                                                        |
+| `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`     | token yes | CLI in CI only                                                                                                         |
 
 `platforms.json` and `deploy.yml` name exactly: `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`, `DATABASE_URL`,
 `BETTER_AUTH_SECRET`, `CRON_SECRET`, `PUBLIC_URL`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`,

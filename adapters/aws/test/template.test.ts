@@ -6,12 +6,51 @@ import {
   loadTemplate,
   runCloudFrontFunction,
   schedulerCron,
+  staticFilePatterns,
   templatePath,
 } from '../scripts/template-check';
 
 describe('template.yaml', () => {
   it('passes the offline checks', () => {
     expect(checkTemplate()).toEqual([]);
+  });
+
+  it('pins the security headers of D310 to the contract and to each behavior', () => {
+    const text = readFileSync(templatePath, 'utf8');
+    const problems = (from: string | RegExp, to: string) => {
+      const changed = text.replace(from, to);
+      expect(changed).not.toBe(text);
+      return checkTemplate(loadTemplate(changed)).join('\n');
+    };
+    expect(staticFilePatterns()).toEqual(['/assets/*', '/favicon.svg', '/robots.txt', '/rum.js']);
+    // The policy: unsafe-inline instead of the hash, another storage origin, a missing directive.
+    expect(problems(/'sha256-[^']+'/, "'unsafe-inline'")).toContain('differs from htmlCsp');
+    expect(problems('data: https://s3.', 'data: https://')).toContain('differs from htmlCsp');
+    expect(problems(" object-src 'none';", '')).toContain('differs from htmlCsp');
+    // HSTS stays for one host.
+    expect(problems('IncludeSubdomains: false', 'IncludeSubdomains: true')).toContain(
+      'SiteHtmlHeadersPolicy: HSTS max-age 31536000 without includeSubDomains or preload',
+    );
+    expect(problems(/Preload: false\n(\s+)Override: false/, 'Preload: true\n$1Override: false')).toContain(
+      'AppHeadersPolicy: HSTS',
+    );
+    // The app's own values win under /api, /media and /f.
+    expect(
+      problems('ContentTypeOptions: { Override: false }', 'ContentTypeOptions: { Override: true }'),
+    ).toContain('AppHeadersPolicy: X-Content-Type-Options with Override false');
+    // A non-HTML file left to the default behavior would get the HTML set.
+    expect(problems(/ {10}- PathPattern: \/robots\.txt\n(?: {12}.*\n)+?(?= {10}- )/, '')).toContain(
+      'SiteHeadersPolicy behaviors must be exactly',
+    );
+    expect(
+      problems(
+        'ResponseHeadersPolicyId: !Ref SiteHtmlHeadersPolicy',
+        'ResponseHeadersPolicyId: !Ref SiteHeadersPolicy',
+      ),
+    ).toContain('The default behavior (the HTML documents) must use SiteHtmlHeadersPolicy');
+    expect(problems('Value: same-origin, Override: true', 'Value: unsafe-none, Override: true')).toContain(
+      'custom headers must be exactly',
+    );
   });
 
   it('notices a dangling reference and a drifted contract value', () => {

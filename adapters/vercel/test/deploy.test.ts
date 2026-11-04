@@ -3,7 +3,9 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { presignedOrigin } from '@hostmark/storage-s3';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { withContentSecurityPolicy } from '../scripts/security-headers';
 
 const script = fileURLToPath(new URL('../scripts/deploy.mjs', import.meta.url));
 
@@ -30,7 +32,9 @@ const FAKE_VERCEL = `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 const stdin = args[0] === 'env' ? fs.readFileSync(0, 'utf8') : '';
-fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ argv: args, stdin, hasToken: Boolean(process.env.VERCEL_TOKEN) }) + '\\n');
+const local = args.indexOf('--local-config');
+const config = local >= 0 ? JSON.parse(fs.readFileSync(args[local + 1], 'utf8')) : undefined;
+fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ argv: args, stdin, hasToken: Boolean(process.env.VERCEL_TOKEN), config }) + '\\n');
 if (process.env.FAKE_LEAK) { process.stdout.write('added ' + stdin + '\\n'); process.stderr.write('echo ' + stdin + '\\n'); }
 if (process.env.FAKE_FAIL && args[0] === 'build') process.exit(7);
 `;
@@ -76,13 +80,22 @@ describe('vercel deploy script', () => {
       .split('\n')
       .map(
         (l) =>
-          JSON.parse(l) as { argv: string[]; stdin: string; hasToken: boolean; env?: Record<string, string> },
+          JSON.parse(l) as {
+            argv: string[];
+            stdin: string;
+            hasToken: boolean;
+            env?: Record<string, string>;
+            config?: { headers: { source: string; headers: { key: string; value: string }[] }[] };
+          },
       );
 
   it('--dry-run prints the commands and runs no vercel', () => {
     const r = run(['--dry-run'], {});
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toMatch(/\$ vercel deploy --prebuilt --prod/);
+    expect(r.stdout).toMatch(
+      /scripts\/security-headers\.ts \S+vercel\.json\n\$ vercel build --prod --local-config \S+vercel\.json\n/,
+    );
     expect(r.stdout).toMatch(/--import tsx scripts\/prepare-database\.ts\n/);
     expect(existsSync(log)).toBe(false);
   });
@@ -119,6 +132,39 @@ describe('vercel deploy script', () => {
       SEED_API_KEY: SECRETS.SEED_API_KEY,
       SEED_ADMIN_API_KEY: SECRETS.SEED_ADMIN_API_KEY,
     });
+  });
+
+  it('builds with vercel.json plus the HTML policy for the configured storage (D310)', () => {
+    const r = run([], { ...SECRETS, ...PLAIN });
+    expect(r.status, r.stderr).toBe(0);
+    const build = records().find((x) => x.argv[0] === 'build');
+    expect(build?.argv.slice(0, 3)).toEqual(['build', '--prod', '--local-config']);
+    const committed = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'));
+    expect(build?.config).toEqual(
+      withContentSecurityPolicy(
+        committed,
+        presignedOrigin({ endpoint: PLAIN.S3_ENDPOINT, bucket: PLAIN.S3_BUCKET }),
+      ),
+    );
+    const policies = build?.config?.headers.flatMap((h) =>
+      h.headers.filter((x) => x.key === 'Content-Security-Policy').map((x) => x.value),
+    );
+    expect(policies).toHaveLength(2);
+    for (const csp of policies ?? [])
+      expect(csp).toContain("connect-src 'self' https://acct.r2.cloudflarestorage.com;");
+    // The temporary file is gone after the run.
+    expect(existsSync(build?.argv[3] ?? '')).toBe(false);
+    // S3_PUBLIC_ENDPOINT is stored only when set, and then names the origin.
+    expect(records().some((x) => x.argv[2] === 'S3_PUBLIC_ENDPOINT')).toBe(false);
+    rmSync(log, { force: true });
+    const pub = run([], { ...SECRETS, ...PLAIN, S3_PUBLIC_ENDPOINT: 'https://files.example.net' });
+    expect(pub.status, pub.stderr).toBe(0);
+    expect(records().find((x) => x.argv[2] === 'S3_PUBLIC_ENDPOINT')?.stdin).toBe(
+      'https://files.example.net',
+    );
+    expect(JSON.stringify(records().find((x) => x.argv[0] === 'build')?.config)).toContain(
+      "connect-src 'self' https://files.example.net;",
+    );
   });
 
   it('does not deploy when the database step fails', () => {

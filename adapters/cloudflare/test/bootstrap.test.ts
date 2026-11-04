@@ -102,8 +102,8 @@ describe('bootstrap', () => {
     expect(at('pnpm --filter @hostmark/db run migrate')).toBeLessThan(
       at('pnpm --filter @hostmark/db run seed'),
     );
-    expect(at('pnpm --filter @hostmark/db run seed')).toBeLessThan(at('node scripts/build.mjs'));
-    expect(at('node scripts/build.mjs')).toBeLessThan(at('wrangler secret bulk'));
+    expect(at('pnpm --filter @hostmark/db run seed')).toBeLessThan(at('node --import tsx scripts/build.mjs'));
+    expect(at('node --import tsx scripts/build.mjs')).toBeLessThan(at('wrangler secret bulk'));
     const deploys = lines.filter((l) => / deploy --var /.test(l));
     expect(deploys).toEqual(
       ['api', 'consumer', 'scheduler'].map(

@@ -1,6 +1,6 @@
 import { Layout, type RumAttributes, toDocument } from './layout';
 
-export { CSS, CSS_VARIABLES } from './styles';
+export { CSS, CSS_HASH, CSS_VARIABLES, STYLE_HASHES } from './styles';
 export type { RumAttributes };
 
 export function renderLanding(rum: RumAttributes): string {

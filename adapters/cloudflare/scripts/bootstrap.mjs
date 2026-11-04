@@ -151,7 +151,7 @@ export async function bootstrap({ exec, env, root = ADAPTER, sha, log = console.
 
   // 7. Web assets, then each Worker: secrets on stdin first (a Worker that does not exist yet is created as a draft
   //    by `secret bulk`), then the deploy. The api first: the others bind to hostmark-api#Media.
-  await run(['node', 'scripts/build.mjs']);
+  await run(['node', '--import', 'tsx', 'scripts/build.mjs']);
   const secrets = JSON.stringify(Object.fromEntries(WORKER_SECRETS.map((name) => [name, vars[name]])));
   for (const file of CONFIGS) {
     await run(wrangler(file, 'secret', 'bulk'), { input: secrets });

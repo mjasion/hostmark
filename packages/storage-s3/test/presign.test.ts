@@ -1,6 +1,6 @@
 import { AwsV4Signer } from 'aws4fetch';
 import { describe, expect, it } from 'vitest';
-import { bucketUrl, createS3Storage } from '../src/index';
+import { bucketUrl, createS3Storage, presignedOrigin } from '../src/index';
 
 const base = {
   endpoint: 'http://minio:9000',
@@ -121,6 +121,22 @@ describe('virtual-hosted-style URLs (Tigris)', () => {
   it('applies to the public endpoint as well', async () => {
     const s = createS3Storage({ ...tigris, publicEndpoint: 'https://t3.storage.dev/' });
     expect(new URL(await s.presignGet('k', 60)).origin).toBe('https://hostmark-bucket.t3.storage.dev');
+  });
+
+  it('names the origin of its presigned URLs for the CSP (D310)', async () => {
+    for (const options of [
+      tigris,
+      { ...tigris, publicEndpoint: 'https://t3.storage.dev/' },
+      base,
+      { ...base, publicEndpoint: 'http://127.0.0.1:59000' },
+    ]) {
+      const s = createS3Storage(options);
+      expect(presignedOrigin(options)).toBe(new URL(await s.presignGet('k', 60)).origin);
+      expect(presignedOrigin(options)).toBe(new URL(await s.presignPut('k', 'image/png', 1, 60)).origin);
+    }
+    expect(presignedOrigin({ ...base, publicEndpoint: 'http://127.0.0.1:59000' })).toBe(
+      'http://127.0.0.1:59000',
+    );
   });
 
   it('keeps path-style as the default (MinIO)', () => {

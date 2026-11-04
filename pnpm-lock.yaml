@@ -240,6 +240,9 @@ importers:
       '@hostmark/node-runtime':
         specifier: workspace:*
         version: link:../../packages/node-runtime
+      '@hostmark/pages':
+        specifier: workspace:*
+        version: link:../../packages/pages
       '@hostmark/storage-s3':
         specifier: workspace:*
         version: link:../../packages/storage-s3
@@ -304,6 +307,9 @@ importers:
       '@hostmark/image':
         specifier: workspace:*
         version: link:../../packages/image
+      '@hostmark/pages':
+        specifier: workspace:*
+        version: link:../../packages/pages
       '@hostmark/storage-s3':
         specifier: workspace:*
         version: link:../../packages/storage-s3
@@ -516,6 +522,9 @@ importers:
       '@hostmark/node-runtime':
         specifier: workspace:*
         version: link:../../packages/node-runtime
+      '@hostmark/pages':
+        specifier: workspace:*
+        version: link:../../packages/pages
       '@hostmark/storage-s3':
         specifier: workspace:*
         version: link:../../packages/storage-s3
@@ -720,6 +729,9 @@ importers:
       '@hostmark/image':
         specifier: workspace:*
         version: link:../image
+      '@hostmark/pages':
+        specifier: workspace:*
+        version: link:../pages
       '@hostmark/storage-s3':
         specifier: workspace:*
         version: link:../storage-s3

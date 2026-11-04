@@ -365,12 +365,19 @@ describe('region and version', () => {
 });
 
 describe('cron route', () => {
-  const runtime = () => ({ deps: {} as never, vars: parseVars(base) });
+  const runtime = () => ({ deps: { config: { publicUrl: 'https://x' } } as never, vars: parseVars(base) });
   const handler = createCronHandler(runtime);
   const call = (url: string, authorization?: string) =>
     handler(new Request(url, { headers: authorization ? { authorization } : {} }));
   it('refuses a caller without the cron secret', async () => {
-    expect((await call('https://x/api/cron/daily-stats')).status).toBe(401);
+    const refused = await call('https://x/api/cron/daily-stats');
+    expect(refused.status).toBe(401);
+    // D310: the API's headers, as on every other /api answer.
+    expect(Object.fromEntries(refused.headers)).toMatchObject({
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
+      'strict-transport-security': 'max-age=31536000',
+    });
     expect((await call('https://x/api/cron/daily-stats', 'Bearer wrong')).status).toBe(401);
     expect((await call('https://x/api/cron?job=daily-stats', 'Bearer wrong')).status).toBe(401);
   });

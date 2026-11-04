@@ -4,3 +4,4 @@ export * from './keys';
 export * from './messages';
 export * from './routes';
 export * from './schemas';
+export * from './security';
