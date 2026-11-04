@@ -13,7 +13,7 @@
     "prerender": "node --import tsx scripts/prerender.ts"
   },
   "dependencies": {
-    "hono": "4.13.14"
+    "hono": "4.13.16"
   },
   "devDependencies": {
     "@hostmark/contract": "workspace:*",

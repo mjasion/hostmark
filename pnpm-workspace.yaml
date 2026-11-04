@@ -5,15 +5,6 @@ packages:
 
 storeDir: .pnpm-store
 
-# The lockfile pins three releases that were younger than minimumReleaseAge when they were added (pnpm 12 refuses them
-# otherwise). They are named here instead of switching the check off. bullmq and set-cookie-parser have been old
-# enough since 2026-11-01T05:07:30Z; @cloudflare/workers-types is old enough minimumReleaseAge after its publication.
-# Drop an entry once its release is old enough.
-minimumReleaseAgeExclude:
-  - bullmq@6.5.3
-  - set-cookie-parser@3.2.2
-  - "@cloudflare/workers-types@5.20261101.1"
-
 # Packages whose install scripts pnpm 12 may run (D201). Every other dependency with a build script fails a strict
 # install, so a new one is a visible change. Never replace this list with dangerouslyAllowAllBuilds.
 allowBuilds:

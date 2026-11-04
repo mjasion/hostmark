@@ -84,7 +84,7 @@ is not in the config because it depends on your zone; add `routes` before pointi
 pnpm check      # parses the three wrangler configs and runs `wrangler deploy --dry-run` on each, offline
 pnpm typecheck
 pnpm test       # Miniflare/workerd; the smoke test needs DATABASE_URL (a Postgres you started yourself)
-pnpm licenses   # regenerates licenses/THIRD-PARTY-LICENSES.txt
+pnpm run licenses   # regenerates licenses/THIRD-PARTY-LICENSES.txt
 ```
 
 `pnpm check` also asserts the carry-over rules: the secrets are not in `vars`, `ENVIRONMENT` is not `local`, the

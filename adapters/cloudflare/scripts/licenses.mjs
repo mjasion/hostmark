@@ -80,7 +80,9 @@ const text = `${[
 if (process.argv.includes('--check')) {
   const current = existsSync(out) ? readFileSync(out, 'utf8') : '';
   if (current !== text) {
-    console.error('licenses/THIRD-PARTY-LICENSES.txt is out of date: run `pnpm licenses`');
+    console.error(
+      'licenses/THIRD-PARTY-LICENSES.txt is out of date: run `pnpm run licenses` (`pnpm licenses` is a pnpm command)',
+    );
     process.exit(1);
   }
   console.log(`licences up to date (${packages.size} packages)`);
