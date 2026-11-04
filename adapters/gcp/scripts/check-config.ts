@@ -122,6 +122,7 @@ export function checkConfig(tf: string = readInfra()): string[] {
   // an origin TTL at 30 days by default, and the API refuses default_ttl, max_ttl and client_ttl with USE_ORIGIN_HEADERS.
   const backend = resourceBlocks(tf, 'google_compute_backend_service').get('api') ?? '';
   expect(/cache_mode\s*=\s*"USE_ORIGIN_HEADERS"/.test(backend), 'Cloud CDN must use the origin headers');
+  expect(/compression_mode\s*=\s*"AUTOMATIC"/.test(backend), 'Cloud CDN must compress text responses (D208)');
   for (const ttl of ['default_ttl', 'max_ttl', 'client_ttl'])
     expect(
       !new RegExp(`^\\s*${ttl}\\s*=`, 'm').test(backend),

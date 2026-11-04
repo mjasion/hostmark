@@ -19,6 +19,8 @@ import { createBullQueue, redisConnection } from '../queue';
 import { makeJpeg } from './fixtures';
 
 const quiet = () => {};
+/** Lock of the contract's BullMQ consumer: short, so that a lost renewal shows within seconds. */
+const RENEWAL_TEST_LOCK_MS = 2_000;
 const logger = { info: quiet, warn: quiet, error: quiet, debug: quiet } as never;
 
 /** Resolves when `fn` returns a value, polling until `waitMs` has passed. */
@@ -62,7 +64,8 @@ export function describeNodePortContracts(label: string): void {
       const queue = createBullQueue(redisUrl, name);
 
       // The real consumer, with its handler parked until the test acknowledges or fails the delivery.
-      // The backoff is 1 % of the production schedule; the long smoke step covers the real one.
+      // The backoff is 1 % of the production schedule; the long smoke step covers the real one. The lock is 2 s
+      // instead of the production minute, so the renewal test watches a held delivery across several lock periods.
       const inbox: QueueDelivery[] = [];
       const consumer = startConsumer({
         redisUrl,
@@ -70,6 +73,8 @@ export function describeNodePortContracts(label: string): void {
         logger,
         concurrency: 1,
         backoffScale: 0.01,
+        lockDurationMs: RENEWAL_TEST_LOCK_MS,
+        stalledIntervalMs: RENEWAL_TEST_LOCK_MS,
         handler: (message, ctx) =>
           new Promise<void>((resolve, reject) => {
             inbox.push({
@@ -100,6 +105,7 @@ export function describeNodePortContracts(label: string): void {
         queue,
         consume: {
           maxAttempts: MAX_ATTEMPTS,
+          renewalMs: RENEWAL_TEST_LOCK_MS,
           next: async (waitMs) => (await next(waitMs)) ?? null,
           async deadLettered(count, waitMs) {
             const jobs = await poll(waitMs, async () => {

@@ -58,6 +58,11 @@ describe('Caddyfile', () => {
     expect(text).toContain(`header_up ${CLIENT_IP_HEADER} {remote_host}`);
     expect(text).toContain('reverse_proxy api:8080');
   });
+
+  it('compresses the app responses, as the CDNs of the other platforms do (D208)', () => {
+    const app = read('Caddyfile').split('{$S3_DOMAIN}')[0] ?? '';
+    expect(app).toMatch(/^\s*encode zstd gzip$/m);
+  });
 });
 
 describe('.env.example', () => {

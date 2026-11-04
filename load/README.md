@@ -182,6 +182,9 @@ Notes that change how a number reads:
   (`passed: null`, with `skipped.reason`); it exits 0 and the summary line says SKIPPED. With it, the page must be a
   cache hit before the purge; if it never was, the run aborts and fails (`aborted` event). A `PURGE_URL` on another
   host than the target needs `LOAD_ACK_PURGE_HOST`, and a loopback target accepts only a loopback `PURGE_URL`.
+  Every platform with a purger offers the same purge API (D206): `PURGE_URL='{base}/api/debug/purge/{id}'`,
+  `PURGE_METHOD=POST` and `PURGE_TOKEN` set to an admin API key. It answers 204, or 501 where the deployment has no
+  CDN (local, VPS, Fly, Railway).
 - **S10, S13** run in the Playwright image as the host user. The repository is mounted read-only; specs are copied
   to a scratch directory with `node_modules` linked to `apps/web/node_modules` (the browser is not launchable on the
   macOS host). INP is approximated from Event Timing: the worst interaction on the single page app.

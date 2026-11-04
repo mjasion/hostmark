@@ -750,14 +750,23 @@ describe.skipIf(!databaseUrl)('http', () => {
       return id;
     }
 
-    it('serves a public ready variant with immutable cache headers', async () => {
+    it('serves a public ready variant with immutable cache headers, one minute in shared caches without a purger', async () => {
       const id = await readyFile(true);
       const res = await h.request(`/media/${id}/512.webp`);
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toBe('image/webp');
-      expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+      expect(h.deps.purger).toBeUndefined();
+      expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, s-maxage=60, immutable');
       expect(res.headers.get('x-trace-id')).toBeTruthy();
       expect(new TextDecoder().decode(await res.arrayBuffer())).toBe('webp:512:fake:800x600');
+    });
+
+    it('lets shared caches keep a variant for a year when a purger can empty them (D100, D205)', async () => {
+      h.deps.purger = { purge: async () => {} };
+      const id = await readyFile(true);
+      const res = await h.request(`/media/${id}/512.webp`);
+      expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+      h.deps.purger = undefined;
     });
 
     it('is 404 for private, not ready, deleted files and unknown sizes', async () => {

@@ -30,6 +30,30 @@ export interface QueueConsumeHarness {
    * which is the case for push consumers, where a handler that throws or runs out of time is the only way back.
    */
   visibilityTimeoutMs?: number;
+  /**
+   * Milliseconds of the lock, lease or visibility that the real consumer renews while its handler runs. With it, a
+   * delivery the test holds (neither acknowledged nor failed, its handler still running) must not come back for
+   * several times this long. Absent when `next` does not hand out deliveries of a renewing consumer.
+   */
+  renewalMs?: number;
+}
+
+/** How long a message that should not come back is watched for: past any visibility timeout or lock of the harness. */
+function quietPeriodMs(consume: QueueConsumeHarness): number {
+  const longest = Math.max(consume.visibilityTimeoutMs ?? 0, consume.renewalMs ?? 0);
+  return Math.max(1_500, longest * 1.5 + 1_000);
+}
+
+/** Fails if `jobId` is delivered again within `ms`; other messages are acknowledged away. */
+async function expectNoDeliveryOf(consume: QueueConsumeHarness, jobId: string, ms: number): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    const d = await consume.next(Math.min(500, Math.max(0, deadline - Date.now())));
+    if (!d) continue;
+    const again = d.message.jobId === jobId;
+    await d.ack();
+    expect(again, `${jobId} was delivered again (attempt ${d.attempt})`).toBe(false);
+  }
 }
 
 export interface QueueContractHarness {
@@ -146,7 +170,14 @@ export function describeQueueContract(name: string, factory: () => Promise<Queue
         const waited = Date.now() - failedAt;
         expect(second.attempt).toBe(2);
         expect(waited).toBeGreaterThanOrEqual(delay * 1000 * 0.9);
-        expect(waited).toBeLessThan(delay * 1000 + 15_000);
+        // A fail() that does nothing brings the message back only after the visibility timeout. When that is clearly
+        // longer than the backoff, the redelivery must come well before it.
+        const visibility = h.consume.visibilityTimeoutMs;
+        const upper =
+          visibility !== undefined && visibility > delay * 1000 * 2 + 2_000
+            ? visibility * 0.8
+            : delay * 1000 + 15_000;
+        expect(waited).toBeLessThan(upper);
         await second.ack();
       }, 90_000);
 
@@ -164,19 +195,24 @@ export function describeQueueContract(name: string, factory: () => Promise<Queue
         await second.ack();
       }, 90_000);
 
-      it('does not redeliver an acknowledged message', async (ctx) => {
+      it('does not redeliver an acknowledged message, also after the visibility timeout', async (ctx) => {
         if (!h.consume) return ctx.skip();
         const msg = message(crypto.randomUUID());
         await h.queue.send(msg);
         await (await nextFor(h.consume, msg.jobId)).ack();
-        for (let i = 0; i < 3; i++) {
-          const again = await h.consume.next(500);
-          if (again) {
-            expect(again.message.jobId).not.toBe(msg.jobId);
-            await again.ack();
-          }
-        }
-      });
+        await expectNoDeliveryOf(h.consume, msg.jobId, quietPeriodMs(h.consume));
+      }, 90_000);
+
+      it('renews a delivery whose handler is still running, so it does not come back', async (ctx) => {
+        const renewal = h.consume?.renewalMs;
+        if (!h.consume || renewal === undefined) return ctx.skip();
+        const msg = message(crypto.randomUUID());
+        await h.queue.send(msg);
+        const held = await nextFor(h.consume, msg.jobId);
+        await expectNoDeliveryOf(h.consume, msg.jobId, renewal * 3);
+        await held.ack();
+        await expectNoDeliveryOf(h.consume, msg.jobId, quietPeriodMs(h.consume));
+      }, 90_000);
 
       it('moves a message to the dead letter queue after maxAttempts failures', async (ctx) => {
         if (!h.consume) return ctx.skip();

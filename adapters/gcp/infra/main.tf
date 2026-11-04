@@ -512,6 +512,8 @@ resource "google_compute_backend_service" "api" {
   protocol              = "HTTPS"
   load_balancing_scheme = "EXTERNAL_MANAGED"
   enable_cdn            = true
+  # Brotli or gzip for text responses, as the CDNs of the other platforms do (S10, D208).
+  compression_mode = "AUTOMATIC"
 
   backend {
     group = google_compute_region_network_endpoint_group.api.id

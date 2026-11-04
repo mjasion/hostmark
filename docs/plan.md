@@ -242,8 +242,8 @@ confirmations. Nothing runs until a platform is enabled and deployed.
 ## Open findings from verification
 
 Opus verification of the adapters on 2026-11-02 found nothing that blocks a commit with every platform off (the two
-GCP blockers are fixed, D200). All adapters stay `emulated`. The AWS items are fixed (D210 to D214), and the GCP
-items except the Cloud login (D220 to D224); the items below are open.
+GCP blockers are fixed, D200). All adapters stay `emulated`. The AWS items are fixed (D210 to D214), the GCP items
+except the Cloud login (D220 to D224) and the items for all platforms (D205 to D208); the items below are open.
 
 Before enabling Vercel:
 
@@ -260,12 +260,3 @@ Before enabling Vercel:
 Before enabling Google Cloud:
 
 - Add a Cloud login to `deploy.yml`.
-
-All platforms:
-
-- `/media` is immutable for a year and VPS, Fly and Railway have no purger. A CDN in front of the VPS, as the spec plans,
-  keeps an unpublished file for up to a year. `packages/core/src/ports.ts` says only `local` lacks a purger.
-- The contract suite does not detect loss of renewal, ack or the failure deadline: three of five mutants passed.
-- S13, S14 and S15 cannot run as written on AWS and Vercel, against acceptance criteria 4 and 6, and no decision says so.
-- Not recorded as comparability limits: compression differs on GCP and VPS (S10), GCP autoscales the api while VPS, Fly
-  and Railway run one, Fly `shared-cpu-*` throttles under load, and api memory differs between platforms.

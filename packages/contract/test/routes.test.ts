@@ -14,6 +14,7 @@ describe('routes', () => {
     const doc = app.getOpenAPI31Document({ openapi: '3.1.0', info: { title: 't', version: '0' } });
     expect(Object.keys(doc.paths ?? {}).sort()).toEqual([
       '/api/debug/cpu',
+      '/api/debug/purge/{id}',
       '/api/files',
       '/api/files/{id}',
       '/api/files/{id}/events',

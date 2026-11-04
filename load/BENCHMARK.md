@@ -35,7 +35,8 @@ same way.
    - secret `HOSTMARK_ADMIN_API_KEY`: for S8 only
    - optional `HOSTMARK_VARIANT` (`portable` or `idiomatic`, default `portable`), and for S12 and S15 the variables
      `HOSTMARK_PURGE_URL`, `HOSTMARK_PURGE_METHOD` and the secret `HOSTMARK_PURGE_TOKEN`. Without a purge URL S15 is
-     recorded as skipped.
+     recorded as skipped. On a platform with a purger use `{base}/api/debug/purge/{id}`, `POST` and an admin API key
+     (D206).
      Restrict each environment to the `main` branch (deployment branches), so no other branch can read its secrets; the
      workflow also does nothing outside `main`. Add **required reviewers** if you want to approve each platform's first
      load by hand.

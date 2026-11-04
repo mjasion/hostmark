@@ -37,6 +37,7 @@ import {
   DomainError,
   ForbiddenError,
   NotFoundError,
+  NotImplementedError,
   PayloadTooLargeError,
   ServiceUnavailableError,
   ValidationError,
@@ -49,6 +50,11 @@ import { probe } from './health';
 import { problemResponse, randomTraceId } from './problem';
 import { htmlResponse, PUBLIC_PAGE_CACHE, pageModel, pageOrigin, rumAttributes } from './public';
 import { publicPaths } from './purge';
+
+/** D6: a variant never changes under its URL. */
+export const MEDIA_CACHE = 'public, max-age=31536000, immutable';
+/** D205: the same for browsers, one minute for shared caches, when no purger can empty them. */
+export const MEDIA_CACHE_UNPURGEABLE = 'public, max-age=31536000, s-maxage=60, immutable';
 
 export interface AppOptions {
   /** Per dependency probe of `/api/health/deep`. */
@@ -523,6 +529,18 @@ export function createApp(
     return c.json({ requestedMs: ms, ...(await burnCpu(ms)) }, 200);
   });
 
+  // D206: the purge API of S12 and S15, the same on every platform: the platform's purger, behind the admin key.
+  app.openapi(apiRoutes.debugPurge, async (c) => {
+    const { purger, telemetry } = c.get('deps');
+    const { id } = c.req.valid('param');
+    if (!purger) throw new NotImplementedError('This deployment has no CDN purger');
+    await purger.purge(publicPaths(id)).catch((error) => {
+      telemetry.logger.error('cdn purge failed', { fileId: id, error });
+      throw new ServiceUnavailableError('The CDN could not be purged; retry');
+    });
+    return c.body(null, 204);
+  });
+
   // D18: public, body size limited, attributes validated against closed lists by the schema.
   app.use(
     '/api/rum',
@@ -566,7 +584,7 @@ export function createApp(
 
   // D6: public variants streamed through api so the CDN can cache them; the bucket stays private.
   app.get('/media/:id/:file', async (c) => {
-    const { db, storage } = c.get('deps');
+    const { db, storage, purger } = c.get('deps');
     const id = c.req.param('id');
     const file = c.req.param('file');
     const size = Number(MEDIA_FILE.exec(file)?.[1]);
@@ -592,7 +610,9 @@ export function createApp(
       headers: {
         'content-type': 'image/webp',
         'content-length': String(body.byteLength),
-        'cache-control': 'public, max-age=31536000, immutable',
+        // D205: without a purger nothing can take an unpublished file out of a shared cache, so CDNs keep it a
+        // minute; browsers keep it a year either way.
+        'cache-control': purger ? MEDIA_CACHE : MEDIA_CACHE_UNPURGEABLE,
       },
     });
   });
