@@ -2,6 +2,7 @@
 // without asking the queue service whether the message exists (D234). Before the handler runs, this asks the service
 // to extend the delivery's lease with the receipt handle of the request: only a delivery the service handed out has a
 // receipt handle it accepts, so a forged POST is refused before any job code runs (D235).
+import { VISIBILITY_TIMEOUT_SECONDS } from '@hostmark/contract';
 import {
   BadRequestError,
   CLOUD_EVENT_TYPE_V2BETA,
@@ -52,7 +53,10 @@ export interface VerifyOptions {
   topic: () => string;
   /** The API client; built lazily so a module import needs no OIDC token. */
   api: () => LeaseApi;
-  /** The lease set by the check: the SDK's default visibility, which it renews from then on. */
+  /**
+   * The lease set by the check: the visibility the route's `handleCallback` runs under, which the SDK renews from
+   * then on. Default: D17's 60 s, the value `src/functions/queue.ts` passes to both (D275).
+   */
   visibilityTimeoutSeconds?: number;
   log?: (msg: string, fields: Record<string, unknown>) => void;
 }
@@ -90,7 +94,7 @@ export function verifyPushedDeliveries(
         queueName,
         consumerGroup,
         receiptHandle,
-        visibilityTimeoutSeconds: opts.visibilityTimeoutSeconds ?? 300,
+        visibilityTimeoutSeconds: opts.visibilityTimeoutSeconds ?? VISIBILITY_TIMEOUT_SECONDS,
       });
     } catch (error) {
       if (REFUSED.some((E) => error instanceof E)) {

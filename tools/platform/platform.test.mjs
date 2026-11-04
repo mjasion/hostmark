@@ -239,6 +239,7 @@ test('each login and tool step runs for its own platform only, after the last in
   const expected = {
     'Install the Railway CLI': 'railway',
     'Install flyctl': 'fly',
+    'Install the Vercel CLI': 'vercel',
     'Log in to AWS': 'aws',
     'Log in to Google Cloud': 'gcp',
     'Set up gcloud': 'gcp',
@@ -273,6 +274,20 @@ test('a downloaded CLI is pinned to a version and checked against a SHA-256 befo
     assert.match(step.text, /SHA256: [0-9a-f]{64}\n/, step.name);
     assert.ok(step.text.indexOf('sha256sum --check') < step.text.indexOf('tar -x'), step.name);
   }
+});
+
+test('the vercel job installs the CLI its deploy script spawns, at one exact version (D270)', () => {
+  const deploy = steps(jobText(workflowText('deploy.yml'), 'deploy'));
+  const step = deploy.find((s) => s.name === 'Install the Vercel CLI');
+  assert.ok(step, 'Install the Vercel CLI');
+  const version = /^ {8}run: npm install --global vercel@(\d+\.\d+\.\d+)$/m.exec(step.text)?.[1];
+  assert.ok(version, 'an exact version, no range and no tag');
+  assert.doesNotMatch(step.text, /secrets\./);
+  const script = readFileSync(join(repo, 'adapters', 'vercel', 'scripts', 'deploy.mjs'), 'utf8');
+  assert.match(script, /run\('vercel', \[/);
+  // The README names the version the workflow installs.
+  const readme = readFileSync(join(repo, 'adapters', 'vercel', 'README.md'), 'utf8');
+  assert.ok(readme.includes(`vercel@${version}`), `adapters/vercel/README.md names vercel@${version}`);
 });
 
 test('every platform that deploy.yml can reach has a platform-deploy script', () => {

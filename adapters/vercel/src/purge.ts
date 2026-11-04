@@ -15,7 +15,7 @@ type DeleteByTag = (tag: string[]) => Promise<void>;
 
 /**
  * The request context the Vercel runtime installs for an invocation, read the way `getContext()` of
- * `@vercel/functions` 3.10.5 reads it (that function is not exported). `test/units.test.ts` checks that both agree.
+ * `@vercel/functions` 3.10.6 reads it (that function is not exported). `test/units.test.ts` checks that both agree.
  */
 const REQUEST_CONTEXT = Symbol.for('@vercel/request-context');
 

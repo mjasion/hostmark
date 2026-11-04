@@ -108,6 +108,7 @@ describe.skipIf(!ready)('api app and queue consumer on Postgres and MinIO', () =
       CRON_SECRET: 'c'.repeat(32),
     };
     runtime = createRuntime(withBuildDefaults(env, { region: 'frankfurt', version: 'e2e1234' }), {
+      service: 'api',
       images: createWasmImageProcessor(nodeLoader),
       queueSdk: platform,
       purger: createVercelPurger(),
@@ -182,7 +183,7 @@ describe.skipIf(!ready)('api app and queue consumer on Postgres and MinIO', () =
     withContext(false);
     await client.deleteFile(created.fileId);
     const cron = await createCronHandler(() => runtime)(
-      new Request(`${PUBLIC_URL}/api/cron?job=cleanup-expired`, {
+      new Request(`${PUBLIC_URL}/api/cron/cleanup-expired`, {
         headers: { authorization: `Bearer ${runtime.vars.CRON_SECRET}` },
       }),
     );

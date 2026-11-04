@@ -28,6 +28,15 @@ export const varsSchema = z.object({
   S3_SECRET_ACCESS_KEY: z.string().min(1),
   /** Vercel sends it to cron routes as `Authorization: Bearer <value>`; Vercel asks for at least 16 characters. */
   CRON_SECRET: z.string().min(16),
+  /** OTLP/HTTP base URL of a collector; empty (the default) exports nothing and logs JSON lines only (D274). */
+  OTLP_ENDPOINT: z
+    .string()
+    .trim()
+    .default('')
+    .refine(
+      (v) => v === '' || (URL.canParse(v) && /^https?:$/.test(new URL(v).protocol)),
+      'must be an http or https URL',
+    ),
   /** Name of the topic; the dead letter topic is `<topic>-dlq`. */
   QUEUE_TOPIC: z.string().min(1).default('image-jobs'),
 });

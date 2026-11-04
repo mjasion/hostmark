@@ -13,7 +13,7 @@
 #     Terraform at pinned versions.
 #   - railway, fly: the CLI at a pinned version, checked against a pinned SHA-256. The token is the only credential.
 #   - vps: ssh of the runner image. The key and the pinned host key exist as files of the deploy script only.
-#   - vercel: the token is the only credential (adapters/vercel/README.md).
+#   - vercel: the CLI at a pinned version from npm; the token is the only credential (adapters/vercel/README.md, D270).
 # Only the deploy job may request an OIDC token (`id-token: write`); the plan job and the workflow default may not.
 #
 # gcp keeps its Terraform state in GCP_STATE_BUCKET and applies without a prompt here (D247).
@@ -103,6 +103,10 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bin"
           tar -xzf "$archive" -C "$RUNNER_TEMP/bin" flyctl
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # An exact version from the npm registry; npm checks the integrity of each tarball, no credential is set yet.
+      - name: Install the Vercel CLI
+        if: matrix.name == 'vercel'
+        run: npm install --global vercel@65.9.0
       - name: Log in to AWS
         if: matrix.name == 'aws'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -155,6 +159,8 @@ jobs:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
           S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
           S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          SEED_API_KEY: ${{ secrets.SEED_API_KEY }}
+          SEED_ADMIN_API_KEY: ${{ secrets.SEED_ADMIN_API_KEY }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}

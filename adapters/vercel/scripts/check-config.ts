@@ -1,7 +1,8 @@
 // `pnpm check`: validates vercel.json offline against a subset of the published schema
 // (https://openapi.vercel.sh/vercel.json, kept in vercel.schema.subset.json) and against the contract.
 import { existsSync, readFileSync } from 'node:fs';
-import { SCHEDULER_JOBS } from '@hostmark/contract';
+import { SCHEDULER_JOBS, SSE_MAX_DURATION_MS } from '@hostmark/contract';
+import { pathToRegexp } from 'path-to-regexp';
 import { rumRegionOf } from '../src/build-info';
 import { MAX_DELIVERIES } from '../src/queue';
 import { FUNCTIONS } from './build';
@@ -74,26 +75,21 @@ export function checkConfig(
   schema = read('./vercel.schema.subset.json'),
 ) {
   const problems = validate(config, schema as Schema);
-  const c = config as {
-    buildCommand?: string;
-    regions?: unknown;
-    crons?: { path: string; schedule: string }[];
-    functions?: Record<
-      string,
-      { includeFiles?: string; experimentalTriggers?: { topic: string; maxDeliveries?: number }[] }
-    >;
-  };
-  // Every scheduler job of the contract must be a cron that calls api/cron with the job name, with the same schedule.
+  const c = config as VercelConfig;
+  // Every scheduler job of the contract must be a cron that calls /api/cron/<job>, with the same schedule (D272).
   for (const [job, schedule] of Object.entries(SCHEDULER_JOBS)) {
-    const cron = c.crons?.find((x) => x.path === `/api/cron?job=${job}`);
+    const cron = c.crons?.find((x) => x.path === `/api/cron/${job}`);
     if (!cron) problems.push(`crons: no entry for ${job}`);
     else if (cron.schedule !== schedule)
       problems.push(`crons: ${job} must run "${schedule}", has "${cron.schedule}"`);
   }
   for (const cron of c.crons ?? []) {
-    const job = new URL(cron.path, 'https://x').searchParams.get('job') ?? '';
+    const job = /^\/api\/cron\/([^/?]+)$/.exec(cron.path)?.[1] ?? '';
     if (!Object.hasOwn(SCHEDULER_JOBS, job)) problems.push(`crons: ${cron.path} names no scheduler job`);
   }
+  const cronRewrite = c.rewrites?.[0];
+  if (cronRewrite?.source !== '/api/cron/:job' || cronRewrite.destination !== '/api/cron?job=:job')
+    problems.push('rewrites: the first must send /api/cron/:job to /api/cron?job=:job');
   const triggers = Object.values(c.functions ?? {}).flatMap((f) => f.experimentalTriggers ?? []);
   const topics = triggers.map((t) => t.topic);
   if (!topics.includes('image-jobs')) problems.push('functions: no queue trigger for the topic image-jobs');
@@ -103,16 +99,89 @@ export function checkConfig(
   for (const t of triggers.filter((x) => x.topic === 'image-jobs'))
     if (t.maxDeliveries !== MAX_DELIVERIES)
       problems.push(`functions: the image-jobs trigger must set maxDeliveries ${MAX_DELIVERIES}`);
-  problems.push(...checkLayout(c));
+  problems.push(...checkLayout(c), ...checkLimits(c), ...checkCacheHeaders(c));
   return problems;
 }
 
-/** The functions are the bundles of scripts/build.ts, and the build knows the region of the deployment. */
-function checkLayout(c: {
+type VercelConfig = {
   buildCommand?: string;
+  installCommand?: string;
   regions?: unknown;
-  functions?: Record<string, { includeFiles?: string }>;
-}): string[] {
+  crons?: { path: string; schedule: string }[];
+  rewrites?: { source: string; destination: string }[];
+  headers?: { source: string; headers: { key: string; value: string }[] }[];
+  functions?: Record<
+    string,
+    {
+      includeFiles?: string;
+      maxDuration?: number | string;
+      maxConcurrency?: number;
+      experimentalTriggers?: { topic: string; maxDeliveries?: number }[];
+    }
+  >;
+};
+
+/**
+ * The api function outlives the longest event stream (D20) with room for the close, and the image consumer runs one
+ * job per instance, as a 4 GiB worker does elsewhere (D213, D271).
+ */
+function checkLimits(c: VercelConfig): string[] {
+  const problems: string[] = [];
+  const api = c.functions?.['api/index.js']?.maxDuration;
+  if (typeof api !== 'number' || api < SSE_MAX_DURATION_MS / 1000 + 30)
+    problems.push(
+      `functions: api/index.js needs a maxDuration of at least ${SSE_MAX_DURATION_MS / 1000 + 30} s`,
+    );
+  if (c.functions?.['api/queue.js']?.maxConcurrency !== 1)
+    problems.push('functions: api/queue.js must set maxConcurrency 1 (one image job per instance)');
+  if (c.installCommand !== 'cd ../.. && npx --yes pnpm@12.15.0 install --frozen-lockfile')
+    problems.push('installCommand: must install with pnpm 12.15.0 from the repository root (D273)');
+  return problems;
+}
+
+/** Cache-Control the CDN must send for a path the static output serves (D88), or `undefined` for none of ours. */
+export const CACHE_HEADERS: Record<string, string | undefined> = {
+  '/assets/app-1a2b3c.js': 'public, max-age=31536000, immutable',
+  '/': 'public, max-age=300',
+  '/index.html': 'public, max-age=300',
+  '/pricing': 'public, max-age=300',
+  '/pricing/': 'public, max-age=300',
+  '/pricing/index.html': 'public, max-age=300',
+  '/login': 'public, max-age=300',
+  '/signup/': 'public, max-age=300',
+  '/app': 'public, max-age=300',
+  '/app/index.html': 'public, max-age=300',
+  '/app/files/0b9e3a52-5f5c-4d0e-9a51-2a3c8f0e1d42': 'public, max-age=300',
+  '/rum.js': 'public, max-age=300',
+  '/api/health': undefined,
+  '/api/cron/daily-stats': undefined,
+  '/media/0b9e3a52-5f5c-4d0e-9a51-2a3c8f0e1d42/128.webp': undefined,
+  '/f/0b9e3a52-5f5c-4d0e-9a51-2a3c8f0e1d42': undefined,
+  '/nope': undefined,
+};
+
+/**
+ * The `Cache-Control` of `headers` for a request path, as `@vercel/routing-utils` applies them: each source compiled
+ * with path-to-regexp 6 (`strict`, `sensitive`, delimiter `/`) against the path as requested, before the filesystem
+ * and the rewrites; a later match overrides an earlier one.
+ */
+export function cacheControlFor(c: VercelConfig, path: string): string | undefined {
+  let value: string | undefined;
+  for (const h of c.headers ?? []) {
+    if (!pathToRegexp(h.source, [], { strict: true, sensitive: true, delimiter: '/' }).test(path)) continue;
+    value = h.headers.find((x) => x.key.toLowerCase() === 'cache-control')?.value ?? value;
+  }
+  return value;
+}
+
+function checkCacheHeaders(c: VercelConfig): string[] {
+  return Object.entries(CACHE_HEADERS)
+    .filter(([path, expected]) => cacheControlFor(c, path) !== expected)
+    .map(([path, expected]) => `headers: ${path} must get Cache-Control ${expected ?? '(none)'}`);
+}
+
+/** The functions are the bundles of scripts/build.ts, and the build knows the region of the deployment. */
+function checkLayout(c: VercelConfig): string[] {
   const problems: string[] = [];
   if (c.buildCommand !== 'node --import tsx scripts/build.ts')
     problems.push('buildCommand: must be "node --import tsx scripts/build.ts", which bundles the functions');
@@ -136,8 +205,18 @@ function checkLayout(c: {
   return problems;
 }
 
+/**
+ * Vercel takes the Node major of the functions and the build from `engines.node` of the Root Directory's
+ * package.json, else from the project setting; pinning it keeps the runtime on the Node line the repository tests with
+ * (D279).
+ */
+export function checkPackage(pkg: Json = read('../package.json')): string[] {
+  const engines = (pkg as { engines?: { node?: string } }).engines;
+  return engines?.node === '22.x' ? [] : ['package.json: engines.node must be "22.x"'];
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const problems = checkConfig();
+  const problems = [...checkConfig(), ...checkPackage()];
   if (problems.length) {
     for (const p of problems) console.error(`vercel.json: ${p}`);
     process.exit(1);

@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { context, metrics, trace } from '@opentelemetry/api';
+import { context, logs, metrics, trace } from '@opentelemetry/api';
 import { expect, it } from 'vitest';
 import { createTelemetry, withSpan } from '../src/index';
 import { startNodeTelemetry } from '../src/node';
@@ -86,4 +86,57 @@ it('uses a different service.instance.id for every process start', async () => {
   expect(a).toBeDefined();
   expect(b).toBeDefined();
   expect(a).not.toBe(b);
+});
+
+it('flush exports the batched signals without a shutdown, and does nothing without an endpoint', async () => {
+  trace.disable();
+  context.disable();
+  metrics.disable();
+  logs.disable();
+  const paths: string[] = [];
+  const server = createServer((req, res) => {
+    paths.push(req.url ?? '');
+    req.resume();
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/x-protobuf');
+      res.end();
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const port = (server.address() as AddressInfo).port;
+  const sdk = startNodeTelemetry({
+    service: 'scheduler',
+    platform: 'vercel-portable',
+    variant: 'portable',
+    imageImpl: 'wasm',
+    version: 'abc',
+    environment: 'test',
+    otlpEndpoint: `http://127.0.0.1:${port}`,
+  });
+  const t = createTelemetry('scheduler', { write: (l) => sdk.write(l) });
+  await withSpan(t.tracer, 'run', async () => {
+    t.metrics.schedulerRunDurationMs.record(5);
+    t.logger.info('ran');
+  });
+  // The batch processors wait seconds before they export on their own; flush must not.
+  await sdk.flush();
+  expect([...new Set(paths)].sort()).toEqual(['/v1/logs', '/v1/metrics', '/v1/traces']);
+  await sdk.shutdown();
+  server.close();
+
+  trace.disable();
+  context.disable();
+  metrics.disable();
+  logs.disable();
+  const quiet = startNodeTelemetry({
+    service: 'api',
+    platform: 'vercel-portable',
+    variant: 'portable',
+    imageImpl: 'wasm',
+    version: 'abc',
+    environment: 'test',
+    otlpEndpoint: '',
+  });
+  await expect(quiet.flush()).resolves.toBeUndefined();
+  await quiet.shutdown();
 });

@@ -1,4 +1,5 @@
 // D235: a pushed delivery runs only after the queue service accepted its receipt handle.
+import { VISIBILITY_TIMEOUT_SECONDS } from '@hostmark/contract';
 import { MessageNotFoundError, QueueClient } from '@vercel/queue';
 import { describe, expect, it, vi } from 'vitest';
 import { type LeaseApi, leaseApiOf, verifyPushedDeliveries } from '../src/verify';
@@ -44,7 +45,7 @@ describe('verifyPushedDeliveries', () => {
       queueName: 'image-jobs',
       consumerGroup: 'api_Squeue_Djs',
       receiptHandle: 'receipt-1',
-      visibilityTimeoutSeconds: 300,
+      visibilityTimeoutSeconds: VISIBILITY_TIMEOUT_SECONDS,
     });
     expect(t.regions).toEqual(['fra1']);
     expect(t.route).toHaveBeenCalledTimes(1);

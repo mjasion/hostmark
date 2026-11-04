@@ -1,12 +1,12 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "installCommand": "cd ../.. && pnpm install --frozen-lockfile",
+  "installCommand": "cd ../.. && npx --yes pnpm@12.15.0 install --frozen-lockfile",
   "buildCommand": "node --import tsx scripts/build.ts",
   "outputDirectory": "public",
   "regions": ["fra1"],
   "functions": {
     "api/index.js": {
-      "maxDuration": 60,
+      "maxDuration": 90,
       "includeFiles": "dist/wasm/*.wasm"
     },
     "api/cron.js": {
@@ -14,6 +14,7 @@
     },
     "api/queue.js": {
       "maxDuration": 300,
+      "maxConcurrency": 1,
       "includeFiles": "dist/wasm/*.wasm",
       "experimentalTriggers": [
         {
@@ -27,21 +28,25 @@
   },
   "crons": [
     {
-      "path": "/api/cron?job=requeue-stuck",
+      "path": "/api/cron/requeue-stuck",
       "schedule": "*/5 * * * *"
     },
     {
-      "path": "/api/cron?job=cleanup-expired",
+      "path": "/api/cron/cleanup-expired",
       "schedule": "*/15 * * * *"
     },
     {
-      "path": "/api/cron?job=daily-stats",
+      "path": "/api/cron/daily-stats",
       "schedule": "5 0 * * *"
     }
   ],
   "rewrites": [
     {
-      "source": "/api/((?!cron$|queue$).*)",
+      "source": "/api/cron/:job",
+      "destination": "/api/cron?job=:job"
+    },
+    {
+      "source": "/api/((?!cron(?:/|$)|queue$).*)",
       "destination": "/api/index"
     },
     {
@@ -68,6 +73,24 @@
         {
           "key": "Cache-Control",
           "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=300"
+        }
+      ]
+    },
+    {
+      "source": "/((?:login|signup|pricing)/?|app(?:/.*)?|(?:pricing/)?index\\.html|rum\\.js)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=300"
         }
       ]
     }

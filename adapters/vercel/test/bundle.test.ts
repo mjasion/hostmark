@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { MAX_ATTEMPTS } from '@hostmark/contract';
+import { MAX_ATTEMPTS, VISIBILITY_TIMEOUT_SECONDS } from '@hostmark/contract';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { FUNCTIONS, WASM } from '../scripts/build';
 
@@ -92,6 +92,8 @@ describe('bundled functions under plain Node', () => {
     expect(lease?.method).toBe('PATCH');
     expect(new URL(lease?.url ?? '').hostname).toBe('fra1.vercel-queue.com');
     expect(new URL(lease?.url ?? '').pathname).toMatch(/\/lease\/probe-receipt$/);
+    // D275: the lease is D17's visibility timeout, the one the route's handleCallback renews.
+    expect(JSON.parse(lease?.body ?? '{}')).toEqual({ visibilityTimeoutSeconds: VISIBILITY_TIMEOUT_SECONDS });
     expect(dlq).toMatchObject({ method: 'POST', idempotencyKey: 'dlq-probe-message' });
     expect(new URL(dlq?.url ?? '').pathname).toBe('/api/v3/topic/image-jobs-dlq');
     expect(JSON.parse(dlq?.body ?? '{}')).toMatchObject({ type: 'process_image' });

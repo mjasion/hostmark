@@ -4,6 +4,9 @@
 // Needs the `vercel` CLI and a project whose Root Directory is `adapters/vercel` (README). The CLI reads VERCEL_TOKEN,
 // VERCEL_ORG_ID and VERCEL_PROJECT_ID from the environment. Secret values reach the CLI only on stdin (`vercel env add`)
 // or as that environment; they are never in argv, and every line the CLI prints is scrubbed of them before it is shown.
+// Before `vercel deploy` the database is migrated and seeded from this machine (scripts/prepare-database.ts, D277): the
+// seed keys come from SEED_API_KEY and SEED_ADMIN_API_KEY, are never generated or printed, and are not project
+// variables, because no function reads them.
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +26,11 @@ const SECRETS = [
   'CRON_SECRET',
   'S3_ACCESS_KEY_ID',
   'S3_SECRET_ACCESS_KEY',
+  'SEED_API_KEY',
+  'SEED_ADMIN_API_KEY',
 ];
+/** Secrets this script uses itself and does not store on the project. */
+const LOCAL = ['VERCEL_TOKEN', 'SEED_API_KEY', 'SEED_ADMIN_API_KEY'];
 const PLAIN = ['PUBLIC_URL', 'S3_ENDPOINT', 'S3_BUCKET'];
 const IDS = ['VERCEL_ORG_ID', 'VERCEL_PROJECT_ID'];
 const missing = [...SECRETS, ...PLAIN, ...IDS].filter((name) => !process.env[name]);
@@ -58,17 +65,19 @@ try {
 
   // 2. Project variables. The value is the standard input of the CLI, never an argument.
   const vars = [
-    ...SECRETS.filter((n) => n !== 'VERCEL_TOKEN').map((n) => [n, '--sensitive']),
+    ...SECRETS.filter((n) => !LOCAL.includes(n)).map((n) => [n, '--sensitive']),
     ...PLAIN.map((n) => [n, '--no-sensitive']),
   ];
   for (const [name, flag] of vars)
     run('vercel', ['env', 'add', name, 'production', flag, '--force', '--yes'], process.env[name] ?? '');
 
-  // 3. Build and deploy the prebuilt output.
+  // 3. Build, prepare the database, deploy the prebuilt output. A failed build changes no table; the new code goes
+  //    live only after its migrations ran. The values reach the script as environment, never argv.
   run('vercel', ['pull', '--yes', '--environment=production']);
   run('vercel', ['build', '--prod']);
+  run(process.execPath, ['--import', 'tsx', 'scripts/prepare-database.ts'], undefined, adapter);
   run('vercel', ['deploy', '--prebuilt', '--prod']);
-  console.log('\nDone. Next (once): DATABASE_URL=... pnpm --filter @hostmark/db migrate');
+  console.log('\nDone.');
 } catch (error) {
   if (!(error instanceof DeployError)) throw error;
   console.error(error.message);

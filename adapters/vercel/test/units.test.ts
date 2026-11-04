@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 import { BACKOFF_SECONDS, type JobMessage, MAX_ATTEMPTS, RUM_REGIONS } from '@hostmark/contract';
 import { dangerouslyDeleteByTag, type PurgeApi } from '@vercel/functions';
 import { afterEach, describe, expect, it } from 'vitest';
-import { checkConfig } from '../scripts/check-config';
+import { checkConfig, checkPackage } from '../scripts/check-config';
 import { cdnCacheControl } from '../src/app';
 import { buildVersion, rumRegionOf, VERCEL_REGIONS, withBuildDefaults } from '../src/build-info';
-import { createCronHandler } from '../src/cron';
+import { createCronHandler, jobOf } from '../src/cron';
 import { CLIENT_IP_HEADER, ConfigError, parseVars } from '../src/env';
 import {
   cacheTag,
@@ -350,6 +350,7 @@ describe('region and version', () => {
   });
   it('passes region and version to core', async () => {
     const runtime = createRuntime(withBuildDefaults(base, { region: 'frankfurt', version: 'abc1234' }), {
+      service: 'api',
       images: {} as never,
       queueSdk: new QueueStandIn(),
       purger: createVercelPurger(async () => {}),
@@ -369,12 +370,26 @@ describe('cron route', () => {
   const call = (url: string, authorization?: string) =>
     handler(new Request(url, { headers: authorization ? { authorization } : {} }));
   it('refuses a caller without the cron secret', async () => {
-    expect((await call('https://x/api/cron?job=daily-stats')).status).toBe(401);
+    expect((await call('https://x/api/cron/daily-stats')).status).toBe(401);
+    expect((await call('https://x/api/cron/daily-stats', 'Bearer wrong')).status).toBe(401);
     expect((await call('https://x/api/cron?job=daily-stats', 'Bearer wrong')).status).toBe(401);
   });
   it('refuses an unknown job', async () => {
-    expect((await call('https://x/api/cron?job=drop-tables', `Bearer ${base.CRON_SECRET}`)).status).toBe(400);
-    expect((await call('https://x/api/cron?job=constructor', `Bearer ${base.CRON_SECRET}`)).status).toBe(400);
+    for (const path of [
+      '/api/cron/drop-tables',
+      '/api/cron/constructor',
+      '/api/cron?job=constructor',
+      '/api/cron',
+    ])
+      expect((await call(`https://x${path}`, `Bearer ${base.CRON_SECRET}`)).status, path).toBe(400);
+  });
+  it('reads the job from the path as sent, or from the query the rewrite adds (D272)', () => {
+    expect(jobOf(new URL('https://x/api/cron/requeue-stuck'))).toBe('requeue-stuck');
+    expect(jobOf(new URL('https://x/api/cron?job=requeue-stuck'))).toBe('requeue-stuck');
+    // The original path wins over a query the caller added.
+    expect(jobOf(new URL('https://x/api/cron/daily-stats?job=cleanup-expired'))).toBe('daily-stats');
+    expect(jobOf(new URL('https://x/api/cron?job=daily-stats&job=cleanup-expired'))).toBe('');
+    expect(jobOf(new URL('https://x/api/cron/daily%2Dstats'))).toBe('daily%2Dstats');
   });
   it('compares secrets in full', () => {
     expect(sameSecret('abc', 'abc')).toBe(true);
@@ -386,11 +401,20 @@ describe('cron route', () => {
 describe('vercel.json', () => {
   it('is valid against the published schema subset and the contract', () => {
     expect(checkConfig()).toEqual([]);
+    expect(checkPackage()).toEqual([]);
+    // D279: the Node major of the functions and the build is pinned in package.json.
+    expect(checkPackage({ engines: { node: '>=22' } })).toEqual([
+      'package.json: engines.node must be "22.x"',
+    ]);
+    expect(checkPackage({})).toHaveLength(1);
   });
   it('rejects an unknown property, a missing job and a consumer on the dead letter topic', () => {
     const config = {
       surprise: true,
-      crons: [{ path: '/api/cron?job=daily-stats', schedule: '5 0 * * *' }],
+      crons: [
+        { path: '/api/cron/daily-stats', schedule: '5 0 * * *' },
+        { path: '/api/cron?job=requeue-stuck', schedule: '*/5 * * * *' },
+      ],
       functions: {
         'api/queue.ts': { experimentalTriggers: [{ type: 'queue/v2beta', topic: 'image-jobs-dlq' }] },
       },
@@ -400,6 +424,7 @@ describe('vercel.json', () => {
     expect(problems).toMatch(/no entry for requeue-stuck/);
     expect(problems).toMatch(/no queue trigger for the topic image-jobs/);
     expect(problems).toMatch(/dead letter topic must have no consumer/);
+    expect(problems).toMatch(/\/api\/cron\?job=requeue-stuck names no scheduler job/);
   });
   it('rejects unbundled functions, a missing region and an unbounded trigger', () => {
     const config = structuredClone(vercelJson);
@@ -416,5 +441,20 @@ describe('vercel.json', () => {
     expect(problems).toMatch(/no entry for api\/index.js/);
     expect(problems).toMatch(/api\/queue.js must ship the codecs/);
     expect(problems).toMatch(new RegExp(`maxDeliveries ${MAX_DELIVERIES}`));
+  });
+  it('rejects a short api maxDuration, a concurrent consumer, an unpinned install and missing cache headers', () => {
+    const config = structuredClone(vercelJson);
+    config.functions['api/index.js'].maxDuration = 60;
+    delete config.functions['api/queue.js'].maxConcurrency;
+    config.installCommand = 'cd ../.. && pnpm install --frozen-lockfile';
+    config.headers = config.headers.slice(0, 1);
+    config.rewrites = config.rewrites.slice(1);
+    const problems = checkConfig(config).join('\n');
+    expect(problems).toMatch(/api\/index.js needs a maxDuration of at least 90 s/);
+    expect(problems).toMatch(/api\/queue.js must set maxConcurrency 1/);
+    expect(problems).toMatch(/installCommand: must install with pnpm 12.15.0/);
+    expect(problems).toMatch(/headers: \/rum.js must get Cache-Control public, max-age=300/);
+    expect(problems).toMatch(/headers: \/ must get/);
+    expect(problems).toMatch(/rewrites: the first must send \/api\/cron\/:job/);
   });
 });

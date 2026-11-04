@@ -4,11 +4,15 @@
   "private": true,
   "type": "module",
   "license": "GPL-3.0-only",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "node --import tsx scripts/build.ts",
     "check": "node --import tsx scripts/check-config.ts",
     "platform-deploy": "node scripts/deploy.mjs",
+    "prepare-database": "node --import tsx scripts/prepare-database.ts",
     "test": "vitest run"
   },
   "dependencies": {

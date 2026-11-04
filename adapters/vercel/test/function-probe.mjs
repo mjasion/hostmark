@@ -63,10 +63,10 @@ report.notFoundPage = {
 };
 
 report.cron = {
-  noSecret: (await cron.GET(new Request(`${origin}/api/cron?job=daily-stats`))).status,
+  noSecret: (await cron.GET(new Request(`${origin}/api/cron/daily-stats`))).status,
   unknownJob: (
     await cron.GET(
-      new Request(`${origin}/api/cron?job=drop-tables`, {
+      new Request(`${origin}/api/cron/drop-tables`, {
         headers: { authorization: `Bearer ${process.env.CRON_SECRET}` },
       }),
     )
