@@ -560,7 +560,7 @@ describe.skipIf(!databaseUrl)('http', () => {
     const events = (text: string) =>
       text
         .split('\n\n')
-        .filter(Boolean)
+        .filter((block) => block && !block.startsWith(':'))
         .map((block) => {
           const lines = Object.fromEntries(
             block.split('\n').map((l) => [l.slice(0, l.indexOf(':')), l.slice(l.indexOf(':') + 1).trim()]),
@@ -591,9 +591,12 @@ describe.skipIf(!databaseUrl)('http', () => {
         h.clock.advance(ms);
       };
       const res = await h.request(`/api/files/${id}/events`, { key: KEYS.alice });
-      const got = events(await res.text());
+      const text = await res.text();
+      const got = events(text);
       expect(got).toHaveLength(1);
       expect(polls).toBe(60);
+      // D236: a quiet stream sends a comment every 15 s (at 15, 30 and 45 s), never at the deadline.
+      expect(text.match(/^: keepalive$/gm)).toHaveLength(3);
     });
 
     it('stops polling when the client disconnects', async () => {

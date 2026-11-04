@@ -12,6 +12,7 @@ import {
   MAX_UPLOAD_BYTES,
   originalKey,
   RUM_MAX_BODY_BYTES,
+  SSE_HEARTBEAT_MS,
   SSE_MAX_DURATION_MS,
   SSE_POLL_INTERVAL_MS,
   STATS_DAYS,
@@ -487,6 +488,7 @@ export function createApp(
       const deadline = clock.now().getTime() + SSE_MAX_DURATION_MS;
       let current: FileRow | undefined = initial;
       let last = '';
+      let lastWrite = clock.now().getTime();
       while (!stream.aborted && !stream.closed) {
         if (current) {
           const event = toStatusEvent(current);
@@ -494,10 +496,17 @@ export function createApp(
           if (data !== last) {
             last = data;
             await stream.writeSSE({ event: 'status', data });
+            lastWrite = clock.now().getTime();
           }
           if (TERMINAL.has(current.status)) return;
         }
-        if (clock.now().getTime() >= deadline) return;
+        const now = clock.now().getTime();
+        if (now >= deadline) return;
+        // D236: a quiet stream still sends bytes, so no proxy times it out before the deadline above.
+        if (now - lastWrite >= SSE_HEARTBEAT_MS) {
+          await stream.write(': keepalive\n\n');
+          lastWrite = now;
+        }
         await clock.sleep(SSE_POLL_INTERVAL_MS);
         if (stream.aborted || stream.closed) return;
         try {
