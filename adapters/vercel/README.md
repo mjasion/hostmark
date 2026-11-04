@@ -137,9 +137,11 @@ with a `consumer` field and a `schedule/v1beta` trigger, both unused).
 - Not verified: delivery semantics and the exact idempotency key behaviour, the 60 s default visibility timeout
   against a large image (a longer run would be delivered twice; not configurable in `vercel.json` as far as the schema
   shows), `vercel dev` as a local queue, the maximum retention of the dead letter topic (7 days at most, then lost).
-- `api/queue.js` trusts every POST: `handleCallback` takes the job from the request body (binary `queue/v2beta` mode)
-  and checks no signature. Prove on the first deployment that a forged `ce-type` POST to `/api/queue` does not reach
-  the handler.
+- Forged deliveries (D235): `handleCallback` takes the job from the request body (binary `queue/v2beta` mode) and
+  checks no signature, so `src/verify.ts` first extends the delivery's lease with its receipt handle; the queue
+  service refuses a handle it did not hand out, and the route answers 403 before any job code runs (5xx when the
+  service cannot be asked, so a real delivery is pushed again). A delivery for another topic is refused. Not verified
+  on a deployment: that the service accepts the lease call for every real push.
 
 ## CDN purge (D100, D199)
 

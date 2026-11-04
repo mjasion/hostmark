@@ -243,12 +243,6 @@ confirmations. Nothing runs until a platform is enabled and deployed.
 ## Open findings from verification
 
 Opus verification of the adapters on 2026-11-02 found nothing that blocks a commit with every platform off (the two
-GCP blockers are fixed, D200). All adapters stay `emulated`. The AWS items are fixed (D210 to D214), the Vercel
-items except the forged POST (D230 to D234), the GCP items (D220 to D224, the login D241) and the items for all
-platforms (D205 to D208); the items below are open.
-
-Before enabling Vercel:
-
-- `api/queue.js` (`src/functions/queue.ts`) trusts every POST: `handleCallback` of `@vercel/queue` 0.10.0 checks no signature or token and takes the
-  job from the request body. The only protection is the documented "no public URL" of consumer functions. Prove it on
-  the first deployment: a forged `ce-type` POST to `/api/queue` must not reach the handler.
+GCP blockers are fixed, D200). All adapters stay `emulated`. Every item found then is fixed: AWS D210 to D214, GCP
+D220 to D224 and the login D241, Vercel D230 to D235, all platforms D205 to D208. What a fix could not prove
+without an account is listed in its decision.

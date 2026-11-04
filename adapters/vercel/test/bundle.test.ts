@@ -40,6 +40,7 @@ describe('bundled functions under plain Node', () => {
       body: unknown;
       outgoing: { method: string; url: string; idempotencyKey: string | null; body?: string }[];
     };
+    queueForged: { status: number; outgoing: { method: string; url: string }[] };
     wasm: Record<string, boolean>;
   };
 
@@ -86,7 +87,11 @@ describe('bundled functions under plain Node', () => {
     expect(report.queueMalformed).toBe(400);
     expect(report.queueDelivery.status).toBe(200);
     expect(report.queueDelivery.body).toEqual({ status: 'success' });
-    const [dlq, ack, ...rest] = report.queueDelivery.outgoing;
+    const [lease, dlq, ack, ...rest] = report.queueDelivery.outgoing;
+    // D235: the receipt handle is checked with the service before anything else.
+    expect(lease?.method).toBe('PATCH');
+    expect(new URL(lease?.url ?? '').hostname).toBe('fra1.vercel-queue.com');
+    expect(new URL(lease?.url ?? '').pathname).toMatch(/\/lease\/probe-receipt$/);
     expect(dlq).toMatchObject({ method: 'POST', idempotencyKey: 'dlq-probe-message' });
     expect(new URL(dlq?.url ?? '').pathname).toBe('/api/v3/topic/image-jobs-dlq');
     expect(JSON.parse(dlq?.body ?? '{}')).toMatchObject({ type: 'process_image' });
@@ -94,6 +99,13 @@ describe('bundled functions under plain Node', () => {
     expect(new URL(ack?.url ?? '').hostname).toBe('fra1.vercel-queue.com');
     expect(rest).toEqual([]);
     expect(MAX_ATTEMPTS).toBeLessThan(6);
+  });
+
+  it('refuses a forged delivery before any job code runs (D235)', () => {
+    expect(report.queueForged.status).toBe(403);
+    expect(report.queueForged.outgoing).toHaveLength(1);
+    expect(report.queueForged.outgoing[0]?.method).toBe('PATCH');
+    expect(new URL(report.queueForged.outgoing[0]?.url ?? '').pathname).toMatch(/\/lease\/forged-receipt$/);
   });
 
   it('ships every wasm codec next to the bundles', () => {

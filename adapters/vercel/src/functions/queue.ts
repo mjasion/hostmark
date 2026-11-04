@@ -3,8 +3,9 @@ import { createJobHandler } from '@hostmark/core';
 import { handleCallback, send } from '@vercel/queue';
 import { createMessageProcessor, deadLetterTopic, retryAfter } from '../queue';
 import { getRuntime } from '../state';
+import { leaseApiOf, verifyPushedDeliveries } from '../verify';
 
-export const POST = handleCallback(
+const route = handleCallback(
   async (payload, metadata) => {
     const { deps, vars } = getRuntime();
     await createMessageProcessor({
@@ -17,3 +18,15 @@ export const POST = handleCallback(
   },
   { retry: retryAfter },
 );
+
+let leaseApi: ReturnType<typeof leaseApiOf> | undefined;
+
+// D235: a pushed delivery runs only after the queue service accepted its receipt handle.
+export const POST = verifyPushedDeliveries(route, {
+  topic: () => getRuntime().vars.QUEUE_TOPIC,
+  api: () => {
+    leaseApi ??= leaseApiOf();
+    return leaseApi;
+  },
+  log: (msg, fields) => getRuntime().deps.telemetry.logger.warn(msg, fields),
+});

@@ -77,12 +77,13 @@ Last full gate, same session, on the last commit of the pull request, with every
 ## Open: engineering
 
 1. Fix the "Open findings from verification" in `plan.md` for a platform before enabling it. They are listed per
-   platform. Open: the forged POST to the Vercel queue route (item 3); the rest
-   is fixed (AWS D210 to D214, GCP D220 to D224, Vercel D230 to D234, all platforms D205 to D208).
+   platform. All are fixed (AWS D210 to D214, GCP D220 to D224, Vercel D230 to D235, all platforms D205 to D208);
+   what each fix could not prove without an account is in its decision.
 2. The OIDC logins of AWS and GCP and the deploy scripts of Railway, Fly and VPS exist (D240 to D245, D247) but
    have not run against an account. Before the first dispatch the owner creates what the "Deploy from GitHub
    Actions" section of each adapter README lists.
-3. Vercel: prove on the first deployment that a forged POST to `/api/queue` does not reach the handler.
+3. Vercel: on the first deployment, check that a real push passes the lease check of D235 and a forged POST to
+   `/api/queue` gets 403.
 4. E2: rerun everything on a clean, quiet machine (about 47 minutes), then the behaviours and spot-checks under "Not
    verified after E2" in `plan.md`.
 5. Preview cleanup for a missed `closed` event: no sweep exists (`adapters/cloudflare/pipeline/README.md`).
@@ -92,7 +93,8 @@ Last full gate, same session, on the last commit of the pull request, with every
    prerendered pages, the JSON API, `/media`, `/rum.js` and the static assets send none, on every platform, and no
    decision covers them. The static files are served by each platform (Node static handler, Workers assets, Vercel,
    S3 behind CloudFront), so headers need a place in core and one per platform. A proposed approach is in the
-   pull request of 2026-11-04; nothing is implemented.
+   pull request of 2026-11-04; nothing is implemented. Owner's decision: HSTS `max-age=31536000` without
+   `includeSubDomains` and without preload.
 8. Known gaps after E1 (`plan.md`, E1): the event stream outlives sign-out by up to 60 s; cancel during `complete`
    does nothing; `/app/files/not-a-uuid` shows raw text and the friendly branch in `apps/web/src/auth.ts` is
    unreachable; "Retry" is offered on refused files; a lazy thumbnail first scrolled to after its presigned URL

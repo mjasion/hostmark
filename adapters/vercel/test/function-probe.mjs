@@ -29,6 +29,12 @@ globalThis.fetch = async (input, init = {}) => {
     idempotencyKey: headers.get('vqs-idempotency-key'),
     body,
   });
+  // D235: the queue service knows no lease with a forged receipt handle.
+  if (url.includes('/lease/forged-receipt'))
+    return new Response(JSON.stringify({ error: 'not found' }), {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
+    });
   return new Response(JSON.stringify({ messageId: 'probe-dlq-message' }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -96,7 +102,27 @@ const delivery = await queue.POST(
     body: JSON.stringify(job),
   }),
 );
-report.queueDelivery = { status: delivery.status, body: await delivery.json(), outgoing };
+report.queueDelivery = { status: delivery.status, body: await delivery.json(), outgoing: [...outgoing] };
+
+// D235: the same delivery with a receipt handle the service does not know is refused before any job code runs.
+const before = outgoing.length;
+const forged = await queue.POST(
+  new Request(`${origin}/api/queue`, {
+    method: 'POST',
+    headers: {
+      'ce-type': 'com.vercel.queue.v2beta',
+      'ce-vqsqueuename': 'image-jobs',
+      'ce-vqsconsumergroup': 'probe',
+      'ce-vqsmessageid': 'forged-message',
+      'ce-vqsreceipthandle': 'forged-receipt',
+      'ce-vqsdeliverycount': '6',
+      'ce-vqsregion': 'fra1',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(job),
+  }),
+);
+report.queueForged = { status: forged.status, outgoing: outgoing.slice(before) };
 
 for (const file of process.argv.slice(2)) {
   const module = await WebAssembly.compile(await readFile(new URL(`../dist/wasm/${file}`, import.meta.url)));
