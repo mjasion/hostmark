@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const text = readFileSync(join(here, '..', '..', '.github', 'workflows', 'benchmark.yml'), 'utf8');
 const lines = text.split('\n');
+// The workflow installs the pnpm that `packageManager` names; Renovate moves both together (D328).
+const pnpmPin = JSON.parse(readFileSync(join(here, '..', '..', 'package.json'), 'utf8')).packageManager;
 
 /** The jobs as { name, body } by indentation: a job starts at two spaces under `jobs:`. */
 function jobs() {
@@ -150,7 +152,7 @@ test('the load jobs install dependencies and make the fixtures in a step with no
     assert.ok(at >= 0, `${name}: install and fixtures step`);
     assert.ok(at < run, `${name}: before the scenarios`);
     assert.doesNotMatch(steps[at], /secrets\.|env:|vars\./, `${name}: no secret, no environment variable`);
-    assert.match(steps[at], /pnpm@12\.15\.0/, name);
+    assert.ok(steps[at].includes(` ${pnpmPin}\n`), `${name}: installs ${pnpmPin}`);
   }
 });
 

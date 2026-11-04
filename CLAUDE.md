@@ -26,7 +26,7 @@ and what is open.
 - The pnpm 10 install strips the first YAML document of `pnpm-lock.yaml` whenever the lockfile changes, and the
   Docker build then fails with `ERR_PNPM_FROZEN_LOCKFILE_WITH_OUTDATED_LOCKFILE`. After changing dependencies,
   regenerate the lockfile with pnpm 12 in a container:
-  `docker run --rm -v "$PWD":/repo -w /repo node:22.23.4-slim sh -c 'npm install --global pnpm@12.15.0 >/dev/null 2>&1 && pnpm install --lockfile-only'`.
+  `docker run --rm -v "$PWD":/repo -w /repo node:22.23.4-slim sh -c 'npm install --global pnpm@12.16.1 >/dev/null 2>&1 && pnpm install --lockfile-only'`.
 - Every `docker compose` command that can build needs `BUILDX_CONFIG="$TMPDIR/buildx"`: `build`, and also `up`,
   `run` and the smoke test, because the app services use `pull_policy: build`. Without it they exit 1 with
   `failed to update builder last activity time`, and in the smoke test step 3 fails and takes step 9 with it.
@@ -45,7 +45,7 @@ and what is open.
 
 - pnpm 12 works directly, with no workaround. Docker is installed but the daemon may need starting (`dockerd &`).
 - Docker Hub answers 429 and `cgr.dev` and `quay.io` are blocked: pull through `mirror.gcr.io` (for example
-  `mirror.gcr.io/library/postgres:17.9-alpine`, `mirror.gcr.io/chainguard/minio:latest`).
+  `mirror.gcr.io/library/postgres:17.11-alpine`, `mirror.gcr.io/chainguard/minio:latest`).
 - TLS goes through a proxy with its own CA. For an image build, tag a local base image that trusts
   `/root/.ccr/ca-bundle.crt` (`NODE_EXTRA_CA_CERTS`, `npm_config_cafile`) as `node:22.23.4-slim`, and build with
   `--network host --build-arg HTTPS_PROXY=$HTTPS_PROXY --build-arg NO_PROXY="$NO_PROXY"`; the Dockerfiles stay as

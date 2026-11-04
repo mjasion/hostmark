@@ -2,7 +2,7 @@
 #   docker build -f adapters/vps/Dockerfile .
 
 FROM node:22.23.4-slim AS build
-RUN npm install --global pnpm@12.15.0
+RUN npm install --global pnpm@12.16.1
 WORKDIR /repo
 COPY . .
 RUN pnpm install --frozen-lockfile --filter @hostmark/adapter-vps... --filter @hostmark/web...

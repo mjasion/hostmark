@@ -51,7 +51,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - run: npm install --global pnpm@12.15.0
+      - run: npm install --global pnpm@12.16.1
       - run: pnpm install --frozen-lockfile
       - run: node --test adapters/cloudflare/pipeline/test/*.test.mjs
       # --deploy also refuses the committed placeholders (account id, Hyperdrive id, example.com URL, D255).
@@ -79,7 +79,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-      - run: npm install --global pnpm@12.15.0
+      - run: npm install --global pnpm@12.16.1
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @hostmark/adapter-cloudflare build
       # The load scenarios read generated fixtures (images, a large file) that no other step produces. No secret

@@ -459,7 +459,7 @@ describe('vercel.json', () => {
     const problems = checkConfig(config).join('\n');
     expect(problems).toMatch(/api\/index.js needs a maxDuration of at least 90 s/);
     expect(problems).toMatch(/api\/queue.js must set maxConcurrency 1/);
-    expect(problems).toMatch(/installCommand: must install with pnpm 12.15.0/);
+    expect(problems).toMatch(/installCommand: must install with pnpm 12.16.1/);
     expect(problems).toMatch(/headers: \/rum.js must get Cache-Control public, max-age=300/);
     expect(problems).toMatch(/headers: \/ must get/);
     expect(problems).toMatch(/rewrites: the first must send \/api\/cron\/:job/);

@@ -28,12 +28,12 @@ image with this adapter's name and RUM defaults).
 ## Documentation findings (checked 2026-11-01)
 
 - Cloud Run worker pools: Preview when D181 was written (2026-11-01). Search results of 2026-11-04 quote the release
-  notes as making them GA on 2026-04-14 (one secondary source says August), and provider 7.46.2 has
+  notes as making them GA on 2026-04-14 (one secondary source says August), and providers 7.46.2 and 8.10.0 have
   `google_cloud_run_v2_worker_pool` in the GA provider; the release notes themselves could not be fetched. The worker
   stays a service, now with manual scaling (`scaling_mode = "MANUAL"`, D293): it keeps the `/healthz` startup probe and
   needs no code change. Instance-based billing keeps the CPU allocated outside requests, which a pull consumer needs.
 - Manual scaling of a service: a fixed instance count whatever the traffic; revision min and max are ignored. The
-  fields are in the GA provider (7.46.2); whether the API still wants a launch stage for them was not confirmed.
+  fields are in the GA provider (7.46.2, 8.10.0); whether the API still wants a launch stage for them was not confirmed.
 - Pub/Sub has no delayed delivery. The ack deadline can be set per message by `ModifyAckDeadline` up to 600 s; that
   is how the D17 backoff (10, 30, 90, 270 s) is applied, and why a delay above 600 s is refused.
 - A dead letter policy forwards a message after `max_delivery_attempts` failed deliveries; `deliveryAttempt` is only
@@ -44,7 +44,7 @@ image with this adapter's name and RUM defaults).
   500 requests a minute; the documentation says it takes effect in about 10 seconds. Not measured here.
 - Cloud Run sends SIGTERM to a service instance and SIGKILL 10 s later (checked 2026-11-04 through search results
   quoting the execution environment and billing pages; the container contract page itself could not be fetched from
-  the session). The Terraform provider (7.46.2) has no setting for it; `template.timeout` is the request timeout.
+  the session). The Terraform provider (7.46.2, 8.10.0) has no setting for it; `template.timeout` is the request timeout.
 - Cloud CDN in `USE_ORIGIN_HEADERS` mode: the expiry comes from `s-maxage`, `max-age` or `Expires`; above 30 days
   (2,592,000 s) it is treated as 30 days by default. `default_ttl`, `max_ttl` and `client_ttl` are refused by the API
   in this mode (the provider strips them on update for that reason, magic-modules #8910). `max_ttl` (up to 31,622,400 s)
