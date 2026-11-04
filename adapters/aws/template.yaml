@@ -47,10 +47,12 @@ Parameters:
     Default: ""
   WorkerMemory:
     Type: Number
-    Default: 3008
-    MinValue: 512
+    Default: 4096
+    MinValue: 4096
     MaxValue: 10240
-    Description: MB. Image decoding holds about 23 bytes per pixel in wasm; 3008 fits the 50 MP limit (D31).
+    Description: >-
+      MB (MiB in Lambda's usage). A worker process peaks at 3.0 to 3.2 GiB on a stream of 50 MP inputs (D79), so the
+      floor is the 4 GiB that the other platforms give the worker. A smaller budget needs a lower pixel limit (D31).
   WorkerMaxConcurrency:
     Type: Number
     Default: 10
@@ -174,6 +176,11 @@ Resources:
               - Effect: Allow
                 Action: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
                 Resource: [!Sub "${Bucket.Arn}/originals/*", !Sub "${Bucket.Arn}/variants/*"]
+              # /api/health/deep sends HEAD for this key (packages/core). Without s3:ListBucket a missing key answers
+              # 403, not 404, so the deploy script writes the empty object and the role may only read it.
+              - Effect: Allow
+                Action: "s3:GetObject"
+                Resource: !Sub "${Bucket.Arn}/healthcheck/probe"
               - Effect: Allow
                 Action: ["sqs:SendMessage", "sqs:GetQueueAttributes"]
                 Resource: !GetAtt JobQueue.Arn
@@ -272,7 +279,7 @@ Resources:
     Properties:
       TargetFunctionArn: !GetAtt ApiFunction.Arn
       # Public by design: CloudFront cannot sign POST and PUT bodies for an IAM protected URL (OAC needs the client to
-      # send x-amz-content-sha256), so the api checks the origin secret instead (README, "Client address header").
+      # send x-amz-content-sha256), so the api checks the origin secret instead (README, "Why not OAC on the function URL").
       AuthType: NONE
       InvokeMode: RESPONSE_STREAM
 
@@ -439,17 +446,21 @@ Resources:
           return request;
         }
 
-  # Dynamic paths: the address CloudFront saw, in a header it overwrites on every request (D80).
-  ClientIpFunction:
+  # /api/*: the address CloudFront saw (D80) and the host the browser used (D51), in headers it overwrites on every
+  # request. The origin request policy replaces Host with the function URL, so without x-forwarded-host every cookie
+  # mutation fails the same-origin check.
+  ApiViewerFunction:
     Type: AWS::CloudFront::Function
     Properties:
-      Name: !Sub "${AWS::StackName}-client-ip"
+      Name: !Sub "${AWS::StackName}-api-viewer"
       AutoPublish: true
-      FunctionConfig: { Comment: "hostmark client address header", Runtime: cloudfront-js-2.0 }
+      FunctionConfig: { Comment: "hostmark client address and forwarded host", Runtime: cloudfront-js-2.0 }
       FunctionCode: |
         function handler(event) {
           var request = event.request;
           request.headers['x-hostmark-client-ip'] = { value: event.viewer.ip };
+          if (request.headers.host) request.headers['x-forwarded-host'] = { value: request.headers.host.value };
+          else delete request.headers['x-forwarded-host'];
           return request;
         }
 
@@ -530,7 +541,7 @@ Resources:
             # No compression: it would buffer the text/event-stream response.
             Compress: false
             FunctionAssociations:
-              - { EventType: viewer-request, FunctionARN: !GetAtt ClientIpFunction.FunctionARN }
+              - { EventType: viewer-request, FunctionARN: !GetAtt ApiViewerFunction.FunctionARN }
           - PathPattern: /media/*
             TargetOriginId: api
             ViewerProtocolPolicy: redirect-to-https

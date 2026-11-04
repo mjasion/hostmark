@@ -9,6 +9,17 @@ import { type CollectionTag, parse, type ScalarTag } from 'yaml';
 import { varsSchema } from '../src/env';
 
 export const templatePath = fileURLToPath(new URL('../template.yaml', import.meta.url));
+const coreAppPath = fileURLToPath(new URL('../../../packages/core/src/http/app.ts', import.meta.url));
+
+/** The key `/api/health/deep` sends HEAD for. Read from the core source, which does not export it. */
+export function healthProbeKey(source = readFileSync(coreAppPath, 'utf8')): string {
+  const keys = [...source.matchAll(/storage\.head\('([^']+)'\)/g)].map((m) => m[1] as string);
+  if (keys.length !== 1) throw new Error(`expected one storage.head('<key>') in core, found ${keys.length}`);
+  return keys[0] as string;
+}
+
+/** Minimum worker memory in MB: D79 measured 3.0 to 3.2 GiB per process, and the other platforms give 4 GiB. */
+export const WORKER_MEMORY_FLOOR_MB = 4096;
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Node = { [key: string]: Json };
@@ -111,6 +122,27 @@ export function checkTemplate(template = loadTemplate()): string[] {
   if (BACKOFF_SECONDS.length + 1 !== MAX_ATTEMPTS)
     problems.push('BACKOFF_SECONDS no longer matches MAX_ATTEMPTS');
 
+  // D79: the worker memory parameter cannot go below the measured peak plus the margin of the other platforms.
+  const memory = params.WorkerMemory as Node | undefined;
+  if (JSON.stringify(props('WorkerFunction').MemorySize) !== JSON.stringify({ Ref: 'WorkerMemory' }))
+    problems.push('WorkerFunction MemorySize must be the WorkerMemory parameter');
+  for (const key of ['Default', 'MinValue'])
+    if (!(Number(memory?.[key]) >= WORKER_MEMORY_FLOOR_MB))
+      problems.push(`WorkerMemory ${key} must be at least ${WORKER_MEMORY_FLOOR_MB} MB (D79)`);
+
+  // /api/health/deep: the api role must be able to read the probe key, or the check answers 503 for ever.
+  const probeResource = `\${Bucket.Arn}/${healthProbeKey()}`;
+  const apiStatements = ((props('ApiRole').Policies ?? []) as Node[]).flatMap(
+    (p) => ((p.PolicyDocument as Node | undefined)?.Statement ?? []) as Node[],
+  );
+  const readsProbe = apiStatements.some(
+    (s) =>
+      s.Effect === 'Allow' &&
+      [s.Action].flat().includes('s3:GetObject') &&
+      [s.Resource].flat().some((r) => JSON.stringify(r) === JSON.stringify({ 'Fn::Sub': probeResource })),
+  );
+  if (!readsProbe) problems.push(`ApiRole must allow s3:GetObject on ${probeResource}`);
+
   // D74: originals/ and variants/ expire after 8 days.
   const rules = ((props('Bucket').LifecycleConfiguration as Node | undefined)?.Rules ??
     []) as unknown as Node[];
@@ -191,8 +223,8 @@ export function checkTemplate(template = loadTemplate()): string[] {
   for (const p of ['/api/*', '/media/*', '/f/*'])
     if (!patterns.includes(p)) problems.push(`No behavior for ${p}`);
   const apiBehavior = ssz.find((b) => b.PathPattern === '/api/*');
-  if (!JSON.stringify(apiBehavior?.FunctionAssociations).includes('ClientIpFunction'))
-    problems.push('/api/* must run the client address function (D80)');
+  if (!JSON.stringify(apiBehavior?.FunctionAssociations).includes('ApiViewerFunction'))
+    problems.push('/api/* must run the viewer function (client address D80, forwarded host D51)');
   if (apiBehavior?.Compress !== false) problems.push('/api/* must not compress (it would buffer SSE)');
   return problems;
 }
@@ -204,7 +236,7 @@ export interface FunctionResult {
 
 /** Runs the inline CloudFront Function code of a resource the way CloudFront would, on a viewer request. */
 export function runCloudFrontFunction(
-  resource: 'SiteFunction' | 'ClientIpFunction',
+  resource: 'SiteFunction' | 'ApiViewerFunction',
   request: { uri: string; headers?: Record<string, { value: string }> },
   viewerIp = '203.0.113.9',
   template = loadTemplate(),

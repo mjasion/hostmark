@@ -242,19 +242,7 @@ confirmations. Nothing runs until a platform is enabled and deployed.
 ## Open findings from verification
 
 Opus verification of the adapters on 2026-11-02 found nothing that blocks a commit with every platform off (the two
-GCP blockers are fixed, D200). All adapters stay `emulated`. These items are open and none is fixed yet.
-
-Before enabling AWS:
-
-- `/api/health/deep` always answers 503: the roles cover `originals/*` and `variants/*`, the probe key is
-  `healthcheck/probe`. Load setup waits for a 200, so every scenario stops there.
-- Every cookie mutation answers 403: Host is the function URL, Origin is CloudFront, nothing sets `x-forwarded-host`.
-  One line in the viewer function fixes it.
-- `rum.js` is cached for a year by `scripts/deploy.mjs`, and no deploy sets a version, so S14 sees `dev`.
-- The 3008 MB of `template.yaml` is below the 3.0 to 3.2 GiB of D79. CloudFront allows 15 wildcard invalidations in
-  progress, so a burst of purges fails with the row already private.
-- The temporary secrets file of `scripts/deploy.mjs` survives SIGTERM and SIGINT. D193 overstates what ElasticMQ proves:
-  the contract test passes without `ChangeMessageVisibility`, only unit tests catch it.
+GCP blockers are fixed, D200). All adapters stay `emulated`. The AWS items are fixed (D210 to D214); the items below are open.
 
 Before enabling Vercel:
 

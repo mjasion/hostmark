@@ -1,12 +1,13 @@
 import type { CreateInvalidationCommand } from '@aws-sdk/client-cloudfront';
 import type { ChangeMessageVisibilityCommand } from '@aws-sdk/client-sqs';
 import { MAX_ATTEMPTS } from '@hostmark/contract';
+import { publicPaths } from '@hostmark/core';
 import { createTelemetry } from '@hostmark/telemetry';
 import type { SQSEvent } from 'aws-lambda';
 import { describe, expect, it } from 'vitest';
 import { createApiApp, sameSecret } from '../src/app';
 import { ConfigError, parseVars } from '../src/env';
-import { compactPaths, createCloudFrontPurger } from '../src/purge';
+import { createCloudFrontPurger, invalidationPaths } from '../src/purge';
 import { backoffSeconds, CrashSignal, createSqsQueue, handleSqsEvent } from '../src/queue';
 import { isSchedulerEvent } from '../src/scheduler';
 
@@ -82,33 +83,68 @@ describe('origin secret', () => {
   });
 });
 
+/**
+ * Models the in-progress quotas of one distribution (documentation, not measured): 15 wildcard paths and 3000 exact
+ * paths may be in progress at once, independently. Nothing completes during the test, as in a burst that is faster
+ * than propagation.
+ */
+function cloudFrontInProgress() {
+  let wildcards = 0;
+  let exact = 0;
+  const calls: CreateInvalidationCommand[] = [];
+  const client = {
+    async send(command: CreateInvalidationCommand) {
+      const items = command.input.InvalidationBatch?.Paths?.Items ?? [];
+      const w = items.filter((p) => p.includes('*')).length;
+      if (wildcards + w > 15 || exact + items.length - w > 3000)
+        throw Object.assign(new Error('Too many invalidations in progress'), {
+          name: 'TooManyInvalidationsInProgress',
+        });
+      wildcards += w;
+      exact += items.length - w;
+      calls.push(command);
+      return {};
+    },
+  };
+  return { client: client as never, calls };
+}
+
 describe('purge', () => {
-  it('collapses the files of one media directory into a wildcard', () => {
-    expect(
-      compactPaths(['/media/a/orig.jpg', '/media/a/thumb.webp', '/media/a/medium.webp', '/f/a', '/f/a']),
-    ).toEqual(['/media/a/*', '/f/a']);
-    expect(compactPaths(['/media/a/orig.jpg'])).toEqual(['/media/a/orig.jpg']);
-  });
-  it('creates one invalidation for the paths of a file', async () => {
+  it('sends the exact public paths of a file, deduplicated, in one invalidation', async () => {
     const calls: CreateInvalidationCommand[] = [];
     const purger = createCloudFrontPurger(
       { send: async (c: never) => void calls.push(c) } as never,
       'E1',
       () => 'ref',
     );
-    await purger.purge(['/media/a/orig.jpg', '/media/a/thumb.webp', '/f/a']);
+    const id = '0190a8f0-0000-7000-8000-000000000001';
+    await purger.purge([...publicPaths(id), `/f/${id}`]);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.input).toEqual({
       DistributionId: 'E1',
-      InvalidationBatch: { CallerReference: 'ref', Paths: { Quantity: 2, Items: ['/media/a/*', '/f/a'] } },
+      InvalidationBatch: {
+        CallerReference: 'ref',
+        Paths: { Quantity: publicPaths(id).length, Items: publicPaths(id) },
+      },
     });
   });
-  it('lets a CloudFront error through so core answers 503 (D100)', async () => {
-    const purger = createCloudFrontPurger(
-      { send: async () => Promise.reject(new Error('TooManyInvalidations')) } as never,
-      'E1',
-    );
-    await expect(purger.purge(['/f/a'])).rejects.toThrow('TooManyInvalidations');
+  it('refuses a wildcard path instead of spending one of the 15', () => {
+    expect(invalidationPaths(['/f/a', '/f/a'])).toEqual(['/f/a']);
+    expect(() => invalidationPaths(['/media/a/*'])).toThrow('wildcard');
+  });
+  it('takes a burst of 700 unpublishes without hitting the in-progress limit', async () => {
+    const cf = cloudFrontInProgress();
+    const purger = createCloudFrontPurger(cf.client, 'E1');
+    const ids = Array.from({ length: 700 }, () => crypto.randomUUID());
+    await Promise.all(ids.map((id) => purger.purge(publicPaths(id))));
+    expect(cf.calls).toHaveLength(700);
+    expect(cf.calls.flatMap((c) => c.input.InvalidationBatch?.Paths?.Items ?? []).join()).not.toContain('*');
+  });
+  it('lets a CloudFront error through so core answers 503 and delete_file retries (D100)', async () => {
+    const cf = cloudFrontInProgress();
+    const purger = createCloudFrontPurger(cf.client, 'E1');
+    for (let i = 0; i < 750; i++) await purger.purge(publicPaths(crypto.randomUUID()));
+    await expect(purger.purge(publicPaths(crypto.randomUUID()))).rejects.toThrow('in progress');
   });
 });
 
