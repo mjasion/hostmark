@@ -54,7 +54,8 @@ jobs:
       - run: npm install --global pnpm@12.15.0
       - run: pnpm install --frozen-lockfile
       - run: node --test adapters/cloudflare/pipeline/test/*.test.mjs
-      - run: pnpm --filter @hostmark/adapter-cloudflare check
+      # --deploy also refuses the committed placeholders (account id, Hyperdrive id, example.com URL, D255).
+      - run: pnpm --filter @hostmark/adapter-cloudflare check --deploy
       - run: pnpm --filter @hostmark/adapter-cloudflare build
 
   deploy:
@@ -108,13 +109,14 @@ jobs:
           LOAD_API_KEY: ${{ secrets.LOAD_API_KEY }}
         run: $PIPELINE rollout --config wrangler.api.jsonc --sha "$SHA" --url "$PRODUCTION_URL" --verify S1,S2
 
-      # The consumer has no HTTP surface: its gate is the upload scenario S4, which needs it to process the queue.
+      # The consumer has no HTTP surface: its gate is the upload scenario S4, which needs it to process the queue. S4
+      # uploads the 12 MP image by default, which this variant refuses (D103), so the gate uses the tiny fixture (D250).
       - name: Roll out the consumer
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           LOAD_API_KEY: ${{ secrets.LOAD_API_KEY }}
-        run: $PIPELINE rollout --config wrangler.consumer.jsonc --sha "$SHA" --url "$PRODUCTION_URL" --no-probe --verify S4
+        run: $PIPELINE rollout --config wrangler.consumer.jsonc --sha "$SHA" --url "$PRODUCTION_URL" --no-probe --verify S4 --upload-fixture jpeg-tiny.jpg
 
       # Cron triggers cannot be split by percentage. Only after the api and the consumer were promoted.
       - name: Deploy the scheduler

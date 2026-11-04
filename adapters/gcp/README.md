@@ -5,29 +5,35 @@ Cloud Storage, a global external Application Load Balancer with Cloud CDN, Secre
 `gcp-portable` platform. Postgres is the shared database of the portable variants (D70), not Cloud SQL.
 Status: `emulated` (no deployment has been made; nothing here has touched a Google Cloud project).
 
-Decisions: D180 to D189 in `docs/decisions.md`.
+Decisions: D180 to D189, D200, D220 to D224, D247 and D290 to D299 in `docs/decisions.md`.
 
 ## What runs where
 
-| Part                | Google Cloud                                                                                     |
-| ------------------- | ------------------------------------------------------------------------------------------------ |
-| api + web build     | Cloud Run service `hostmark-api`, ingress only from the load balancer, `run.app` URL disabled    |
-| worker              | Cloud Run service `hostmark-worker`, instance-based billing, fixed 2 instances, concurrency 1    |
-| scheduler           | Cloud Scheduler, three jobs, each runs the Cloud Run Job `hostmark-<name>` (`dist/run-job.js`)   |
-| queue               | Pub/Sub topic `image-jobs`, subscription `image-jobs-worker`, dead letter topic `image-jobs-dlq` |
-| storage             | Cloud Storage bucket over the XML API with an HMAC key (SigV4), lifecycle and CORS in Terraform  |
-| CDN                 | Cloud CDN on the backend service of the load balancer (serverless NEG), `USE_ORIGIN_HEADERS`     |
-| secrets             | Secret Manager: database URL, auth secret, HMAC key id and secret                                |
-| migrations and seed | Cloud Run Jobs `hostmark-migrate` and `hostmark-seed`                                            |
+| Part                | Google Cloud                                                                                       |
+| ------------------- | -------------------------------------------------------------------------------------------------- |
+| api + web build     | Cloud Run service `hostmark-api`, ingress only from the load balancer, `run.app` URL disabled      |
+| worker              | Cloud Run service `hostmark-worker`, instance-based billing, manual scaling to 2, concurrency 1    |
+| scheduler           | Cloud Scheduler, three jobs, each runs the Cloud Run Job `hostmark-<name>` (`dist/run-job.js`)     |
+| queue               | Pub/Sub topic `image-jobs`, subscription `image-jobs-worker`, dead letter topic `image-jobs-dlq`   |
+| storage             | Cloud Storage bucket over the XML API with an HMAC key (SigV4), lifecycle and CORS in Terraform    |
+| CDN                 | Cloud CDN on the backend service of the load balancer (serverless NEG), `USE_ORIGIN_HEADERS`       |
+| secrets             | Secret Manager: database URL, auth secret, HMAC key id and secret, seed keys, OTLP headers         |
+| migrations and seed | Cloud Run Jobs `hostmark-migrate` and `hostmark-seed` (seed keys from Secret Manager)              |
+| identities          | `hostmark-runtime` (api, worker), `hostmark-jobs` (scheduled), `hostmark-operator` (migrate, seed) |
 
 The code is `src/`: `queue.ts` (publisher), `consumer.ts` (pull consumer), `purge.ts` (Cloud CDN), `runtime.ts`
-(wiring), and the entrypoints `api.ts`, `worker.ts`, `run-job.ts`. The image is built from `Dockerfile` (the local
+(wiring), `shutdown.ts` (the SIGTERM budget), and the entrypoints `api.ts`, `worker.ts`, `run-job.ts`, `seed.ts`. The image is built from `Dockerfile` (the local
 image with this adapter's name and RUM defaults).
 
 ## Documentation findings (checked 2026-11-01)
 
-- Cloud Run worker pools are in Preview, so the worker is a service. Instance-based billing keeps the CPU allocated
-  outside requests, which a pull consumer needs. A service autoscales on requests only, so the count is fixed.
+- Cloud Run worker pools: Preview when D181 was written (2026-11-01). Search results of 2026-11-04 quote the release
+  notes as making them GA on 2026-04-14 (one secondary source says August), and provider 7.46.2 has
+  `google_cloud_run_v2_worker_pool` in the GA provider; the release notes themselves could not be fetched. The worker
+  stays a service, now with manual scaling (`scaling_mode = "MANUAL"`, D293): it keeps the `/healthz` startup probe and
+  needs no code change. Instance-based billing keeps the CPU allocated outside requests, which a pull consumer needs.
+- Manual scaling of a service: a fixed instance count whatever the traffic; revision min and max are ignored. The
+  fields are in the GA provider (7.46.2); whether the API still wants a launch stage for them was not confirmed.
 - Pub/Sub has no delayed delivery. The ack deadline can be set per message by `ModifyAckDeadline` up to 600 s; that
   is how the D17 backoff (10, 30, 90, 270 s) is applied, and why a delay above 600 s is refused.
 - A dead letter policy forwards a message after `max_delivery_attempts` failed deliveries; `deliveryAttempt` is only
@@ -36,6 +42,14 @@ image with this adapter's name and RUM defaults).
 - The minimum ack deadline is 10 s; the subscription uses 60 s (D17).
 - Cloud CDN invalidation (`urlMaps.invalidateCache`): one path per request, exact or a prefix ending in `*`; up to
   500 requests a minute; the documentation says it takes effect in about 10 seconds. Not measured here.
+- Cloud Run sends SIGTERM to a service instance and SIGKILL 10 s later (checked 2026-11-04 through search results
+  quoting the execution environment and billing pages; the container contract page itself could not be fetched from
+  the session). The Terraform provider (7.46.2) has no setting for it; `template.timeout` is the request timeout.
+- Cloud CDN in `USE_ORIGIN_HEADERS` mode: the expiry comes from `s-maxage`, `max-age` or `Expires`; above 30 days
+  (2,592,000 s) it is treated as 30 days by default. `default_ttl`, `max_ttl` and `client_ttl` are refused by the API
+  in this mode (the provider strips them on update for that reason, magic-modules #8910). `max_ttl` (up to 31,622,400 s)
+  only applies to the other modes.
+- A Pub/Sub subscription without `expiration_policy` is deleted after 31 days without activity; `ttl = ""` means never.
 - Headers that the load balancer adds as custom request headers overwrite headers of the same name that the client
   sent (D182). `{client_ip_address}` is one of the variables available for them.
 - Cloud Storage's XML API accepts SigV4 with an HMAC key (the S3 interoperability path), including presigned URLs.
@@ -52,15 +66,69 @@ deployment. `platform.ts` sets `AUTH_CLIENT_IP_HEADER` to it, and `scripts/check
 
 ## Cache purge (D100)
 
-Unpublishing or deleting a file calls `CachePurger.purge(publicPaths(id))`, which invalidates `/media/<id>/<size>.webp`
-for every size and `/f/<id>` on the URL map `CDN_URL_MAP`. The runtime service account has a custom role with
-`compute.urlMaps.invalidateCache` only. A refused call rejects, so core answers 503 and the caller retries.
-Propagation time and a successful call against Google are not measured.
+Unpublishing or deleting a file calls `CachePurger.purge(publicPaths(id))`. The purger sends two invalidations on the
+URL map `CDN_URL_MAP`, concurrently: the prefix `/media/<id>/*` for every variant and `/f/<id>`. At the documented 500
+requests a minute that is 250 files a minute (four sequential calls allowed 125). `purge` settles after both calls and
+rejects when either was refused, failed or ran past its 10 s timeout, so core answers 503 and the caller retries. The
+access token comes from the metadata server with a 3 s timeout. The runtime service account has a custom role with
+`compute.urlMaps.invalidateCache` only. Propagation time, a successful call against Google and the prefix match are
+not measured.
 
 ## Bucket lifecycle (D74)
 
 `originals/` and `variants/` expire after 8 days: the `lifecycle_rule` of `google_storage_bucket.media`. CORS for
 PUT and GET is in the same resource.
+
+## Worker shutdown
+
+Cloud Run sends SIGKILL 10 s after SIGTERM. While running, each `Pull` waits up to 10 s for a message. On SIGTERM the
+worker stops pulling: the pull in flight is cancelled, and a pull that starts after that has a 1 s deadline (D220). It
+waits up to 4 s for a running job, then sets the ack deadline of every message it still holds to 0, so Pub/Sub redelivers it
+at once to the other instance instead of after the 60 s ack deadline. A batch that arrives while closing is handed back
+the same way. It then closes the clients, the database and telemetry, and exits; if that has not finished 9 s after
+SIGTERM it exits with code 1. The redelivery counts as a delivery attempt (`deliveryAttempt` and `files.attempts`), as
+a lost lease always did; the job's own process may still run it for the remaining second or two, which the database
+claim allows (D17). Measured on the emulator with the built bundle and a `chaos=slow` job: exit 4.0 s after SIGTERM,
+the message redelivered with `deliveryAttempt` 2 at the same time.
+
+## api shutdown (D296)
+
+On SIGTERM the api stops accepting connections and closes the idle ones. Requests in flight get 3 s; then every
+connection still open is cut. Those are in practice the SSE streams of `/api/files/:id/events` (up to 60 s, D20), whose
+`EventSource` reconnects through the load balancer to an instance that is not stopping. Then the database closes and
+telemetry is flushed; if that has not finished 9 s after SIGTERM the process exits with code 1, before Cloud Run's
+SIGKILL at 10 s.
+
+## Seed
+
+The `hostmark-seed` job runs `src/seed.ts`, not the `packages/db` CLI, which prints the keys it generates (D14). A job's
+output goes to Cloud Logging, so the job refuses to run without `SEED_API_KEY` and `SEED_ADMIN_API_KEY`, never
+generates a key and prints none. Both come from the Secret Manager secrets `hostmark-seed-api-key` and
+`hostmark-seed-admin-api-key`, which `scripts/deploy.sh` fills: with the owner's value when set (a new version, so the
+next seed rotates, D75) when it differs from the stored one, otherwise with a generated `hm_` key once, when the secret
+has no version. Read a key with `gcloud secrets versions access latest --secret hostmark-seed-api-key`.
+
+## Secrets and rotation (D299)
+
+The jobs and services read every secret as `version = "latest"`, resolved when an instance starts. `deploy.sh` adds a
+version only when the value differs from the latest one (it compares in the shell and never prints either), and then
+disables every older version, so exactly one is enabled and a leaked old value stops working. A changed value reaches
+the services with the next revision, which every deploy of a new commit creates; to rotate without a new commit, run
+`deploy.sh` with the new value and then `gcloud run services update hostmark-api --region <region>` (and the same for
+`hostmark-worker`) to start new instances. Instances that started before the rotation keep the old value until they
+stop. Rotating `BETTER_AUTH_SECRET` signs everyone out; rotating `DATABASE_URL` must keep the old credentials valid until
+the new revisions are serving. The HMAC key is Terraform's: a new one needs `terraform apply -replace
+google_storage_hmac_key.runtime`, then new revisions.
+
+## Identities (D297)
+
+Three service accounts, each with what its code uses. `hostmark-runtime` (api and worker): the bucket
+(`roles/storage.objectUser`), publish, subscribe and view on the queue, the CDN invalidation role, and the secrets of
+the services; not the seed keys. `hostmark-jobs` (the three scheduled jobs): publish on the topic and `DATABASE_URL`
+only. The jobs touch only the database and the queue (D19): `cleanup-expired` marks files deleted and enqueues
+`delete_file`, and the worker deletes the objects and purges the CDN. The env schema still requires the two S3 key
+variables, so the jobs get placeholder values that sign nothing. `hostmark-operator` (migrate and seed):
+`DATABASE_URL` and the two seed keys. `hostmark-scheduler` only invokes the scheduled jobs.
 
 ## Scheduler
 
@@ -80,11 +148,104 @@ DATABASE_URL='postgres://...' BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
 ```
 
 `scripts/deploy.sh` validates the config offline, creates the Artifact Registry repository, builds and pushes the
-image, creates the two secrets and stores their values, runs `terraform apply` (it shows the plan and asks), and runs
-the migration job. Then point the `A` record of `DOMAIN` at the `lb_ip` output; the managed certificate is issued
-after DNS resolves. Seed demo data with `gcloud run jobs execute hostmark-seed --wait`. Resources that cost money:
-the load balancer forwarding rule, two always-on worker instances, one always-on api instance, Cloud CDN egress,
-Pub/Sub and storage. Do not run it without the owner's decision to deploy this platform.
+image, creates the secrets it fills and stores the values that changed, applies the migrate job alone on the new image
+and runs it (`--wait`), and only then runs the full `terraform apply` (it shows the plan and asks), which moves the
+services to the new image (D298). A failed migration stops the deploy with the old services still serving; a migration
+must stay compatible with the code of the previous deploy, which keeps serving until the new revisions take over. Then
+point the `A` record of `DOMAIN` at the `lb_ip` output; the managed certificate is issued after DNS resolves. Port 80
+answers with a redirect to https (D294). Seed with `gcloud run jobs execute hostmark-seed --wait` (see Seed).
+
+Optional settings of the deploy:
+
+- `AUTH_SIGNUP_ENABLED` (`false` by default): D7 keeps signup off on a deployment. Scenario S13 signs up, so a run that
+  includes S13 must deploy with `AUTH_SIGNUP_ENABLED=true` (D291), and should turn it off again afterwards.
+- `OTLP_ENDPOINT`: the OTLP/HTTP base URL that the api, the worker and the scheduled jobs export to; unset, nothing is
+  exported. `OTLP_HEADERS`: the collector's headers in the `OTEL_EXPORTER_OTLP_HEADERS` format
+  (`Authorization=Basic%20...`); `deploy.sh` stores them in the secret `hostmark-otlp-headers`, and the OpenTelemetry
+  exporters read the variable themselves (D290). Put credentials in the headers, not in the endpoint URL, which is a
+  plain variable.
+
+Resources that cost money: the two load balancer forwarding rules (443 and the port 80 redirect), two always-on worker
+instances, one always-on api instance, Cloud CDN egress, Pub/Sub and storage. The api runs with instance-based billing
+(`cpu_idle = false`, D292), so every api instance is billed for its whole lifetime, idle or not, at the instance-based
+rate, and not only while it serves requests. Do not run it without the owner's decision to deploy this platform.
+
+The api is invoked without an IAM check (`invoker_iam_disabled`, D294): ingress admits only the load balancer, so no
+`allUsers` binding is needed. An organisation policy that requires the invoker check
+(`run.managed.requireInvokerIam`) refuses this setting.
+
+## Destroy
+
+`terraform destroy` (with the same variables) removes everything except what keeps data or names:
+
+- The bucket has `force_destroy = false`, so the destroy fails while it holds objects. Empty it first:
+  `gcloud storage rm --recursive 'gs://<bucket>/**'`. Soft delete is off (`retention_duration_seconds = 0`, D295), so
+  deleted objects are gone at once and not billed for 7 more days.
+- The custom role `hostmarkCdnInvalidate` is only soft-deleted. An apply within 7 days undeletes and reuses it. After
+  that its ID stays taken until Google purges it, up to 37 days after the delete (a provider maintainer has quoted up to
+  44), and an apply in that window fails: wait, or change `role_id` in `infra/main.tf`.
+- Secret Manager secrets and their versions are deleted with the destroy. The enabled APIs stay enabled
+  (`disable_on_destroy = false`), and the Terraform state bucket of D247 is not Terraform's and stays.
+
+## Deploy from GitHub Actions
+
+`deploy.yml` logs in with OIDC through Workload Identity Federation (`google-github-actions/auth` v3.0.0, D241): the
+job's GitHub token is exchanged for a short-lived token of `GCP_SERVICE_ACCOUNT`; no key file exists. The action
+writes an external-account credentials file (`gha-creds-*.json`, ignored by git and by the Docker build context) and
+exports `GOOGLE_APPLICATION_CREDENTIALS` and `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`, which gcloud, Terraform and the
+Docker credential helper read in place of `gcloud auth application-default login`. Then `setup-gcloud` (gcloud
+590.0.1) and `setup-terraform` (Terraform 1.17.1, wrapper off) run, all for `gcp` only and after the install, and
+`pnpm platform deploy gcp` runs `scripts/deploy.sh`.
+
+**Terraform state and approval (D247):** the state lives in the bucket named by the environment secret
+`GCP_STATE_BUCKET` (prefix `hostmark/gcp`), which you create once by hand, with versioning on and access for
+`GCP_SERVICE_ACCOUNT` only: `gcloud storage buckets create gs://<bucket> --location <region>
+--uniform-bucket-level-access` and `gcloud storage buckets update gs://<bucket> --versioning`. `deploy.sh` writes a
+`gcs` backend override for that run only, so `infra/` keeps the local backend on a workstation unless you set
+`GCP_STATE_BUCKET` there too (do, once a deploy from Actions has happened, or the two states diverge). In CI the apply
+runs with `-auto-approve`: the environment's reviewers are the approval, so add required reviewers to the `gcp`
+environment. Without the bucket the script refuses to run in CI.
+
+Once, in the project (with your own login; `<owner>/<repo>` is this repository):
+
+```sh
+gcloud iam service-accounts create hostmark-deploy --project "$GCP_PROJECT"
+gcloud iam workload-identity-pools create github --project "$GCP_PROJECT" --location global
+gcloud iam workload-identity-pools providers create-oidc hostmark --project "$GCP_PROJECT" --location global \
+  --workload-identity-pool github --issuer-uri https://token.actions.githubusercontent.com \
+  --attribute-mapping 'google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref,attribute.environment=assertion.environment' \
+  --attribute-condition "assertion.repository == '<owner>/<repo>' && assertion.ref == 'refs/heads/main' && assertion.environment == 'gcp'"
+gcloud iam service-accounts add-iam-policy-binding "hostmark-deploy@${GCP_PROJECT}.iam.gserviceaccount.com" \
+  --project "$GCP_PROJECT" --role roles/iam.workloadIdentityUser \
+  --member "principalSet://iam.googleapis.com/projects/<project-number>/locations/global/workloadIdentityPools/github/attribute.repository/<owner>/<repo>"
+gcloud iam workload-identity-pools providers describe hostmark --project "$GCP_PROJECT" --location global \
+  --workload-identity-pool github --format 'value(name)'     # the value of GCP_WORKLOAD_IDENTITY_PROVIDER
+```
+
+The attribute condition admits only tokens of this repository, from `main`, in the `gcp` environment; the binding
+lets only this repository impersonate the account. The account then needs the roles that `deploy.sh` and `infra/`
+use: enabling APIs, Artifact Registry, Cloud Run, Pub/Sub, Cloud Storage with HMAC keys, Secret Manager, Cloud
+Scheduler, the load balancer and certificate, service accounts, a custom role and project IAM bindings. A
+least-privilege list was not worked out; a dedicated project with `roles/owner` on this account is the simple
+choice, and the attribute condition is what limits who can use it.
+
+In GitHub, environment `gcp` (deployment branches: `main` only):
+
+| Secret                           | Value                                                                                |
+| -------------------------------- | ------------------------------------------------------------------------------------ |
+| `GCP_PROJECT`                    | project id                                                                           |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | `projects/<number>/locations/global/workloadIdentityPools/github/providers/hostmark` |
+| `GCP_SERVICE_ACCOUNT`            | `hostmark-deploy@<project>.iam.gserviceaccount.com`                                  |
+| `DOMAIN`                         | host name of the load balancer                                                       |
+| `DATABASE_URL`                   | shared Postgres                                                                      |
+| `BETTER_AUTH_SECRET`             | 32+ characters                                                                       |
+
+The provider and the account are identifiers, not credentials; they are secrets so that every name of
+`platforms.json` lives in one place and `pnpm platform check gcp` covers them (D241).
+
+Not proven (needs a project): the pool, the provider and the condition against a real token; that gcloud, Terraform's
+Google provider and `docker push` through `gcloud auth configure-docker` all accept the external-account credentials;
+the roles of the account; the whole deploy from a runner (blocked, see above).
 
 ## Required variables
 
@@ -94,13 +255,17 @@ Pub/Sub and storage. Do not run it without the owner's decision to deploy this p
 | `DOMAIN`                                   | deploy                      | Host name of the load balancer; becomes `PUBLIC_URL`                     |
 | `DATABASE_URL`                             | deploy, then Secret Manager | Shared Postgres                                                          |
 | `BETTER_AUTH_SECRET`                       | deploy, then Secret Manager | 32+ characters                                                           |
+| `SEED_API_KEY`, `SEED_ADMIN_API_KEY`       | deploy (optional), then SM  | Seed keys (D14); generated by `deploy.sh` when unset and never printed   |
+| `AUTH_SIGNUP_ENABLED`                      | deploy (optional)           | `false` by default (D7); `true` for a run that includes S13 (D291)       |
+| `OTLP_ENDPOINT`                            | deploy (optional), services | OTLP/HTTP base URL; unset means no telemetry export (D290)               |
+| `OTLP_HEADERS`                             | deploy (optional), then SM  | Collector headers, passed as `OTEL_EXPORTER_OTLP_HEADERS` (D290)         |
 | `REGION`, `REPO`, `APP_VERSION`            | deploy (optional)           | Default `europe-west3`, `hostmark`, short git hash                       |
 | `PUBSUB_TOPIC`, `PUBSUB_SUBSCRIPTION`      | services (set by Terraform) | Default `image-jobs`, `image-jobs-worker`                                |
 | `CDN_URL_MAP`                              | services (set by Terraform) | URL map to invalidate; unset means no purge (a deployment without a CDN) |
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`    | services (Terraform)        | `https://storage.googleapis.com`, the bucket, `auto`                     |
 | `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Secret Manager (Terraform)  | HMAC key of the runtime service account                                  |
 
-The other variables are those of `packages/node-runtime` (`docs`: `WORKER_CONCURRENCY`, `WEB_DIST`, `OTLP_ENDPOINT`,
+The other variables are those of `packages/node-runtime` (`docs`: `WORKER_CONCURRENCY`, `WEB_DIST`,
 `AUTH_*`, `QUEUE_BACKOFF_SCALE`) without `REDIS_URL`. Terraform state holds the HMAC secret: keep the state private.
 
 ## Tests
@@ -123,11 +288,19 @@ PUBSUB_EMULATOR_HOST=127.0.0.1:55800 S3_TEST_ENDPOINT=http://127.0.0.1:55801 \
 ```
 
 The queue suite covers delivery, batches above 100, a delayed message, redelivery with the next attempt number, the
-backoff, redelivery after the ack deadline and the dead letter topic after five failures.
+backoff, redelivery after the ack deadline and the dead letter topic after five failures. `test/shutdown.test.ts` closes
+a consumer with a job running past the grace and checks the next consumer gets it at once with attempt 2, that a
+job ending within the grace is acked, and that closing an idle consumer cancels its open pull at once without leasing
+the next message; it also closes an HTTP server with an open stream as the api does. `test/deploy.test.ts` runs
+`deploy.sh` against fakes: the order migrate job, migration, full apply; secrets stored only when changed; no secret
+on a command line or the output. `test/seed.test.ts` needs `DATABASE_URL` (it creates and drops its own database).
 
 ## Not proven (needs a real project)
 
-Any deployment; `terraform validate` (needs the provider, not run); a successful invalidation and its delay; presigned
+Any deployment; `terraform plan` (`terraform validate` passes in CI, D202); a successful
+invalidation, its delay and the `/media/<id>/*` prefix match; the 10 s SIGTERM window on a real instance; the
+cancelled pull on real Pub/Sub; manual scaling, `invoker_iam_disabled`, `serve_while_stale` and the port 80 redirect
+against the API; the three service accounts' roles being enough; presigned
 PUT and `Content-Length` binding against Google; the load balancer header on a real request; the real Pub/Sub ack
 deadline, `ModifyAckDeadline` and `deliveryAttempt`; the managed certificate; prices; the longest event loop block at the
 smallest instance (not measured).
@@ -136,5 +309,7 @@ smallest instance (not measured).
 
 Cloud CDN does not cache a response with `Set-Cookie`, nor a request with `Authorization` unless the response's
 `Cache-Control` allows it, and a `Vary` outside its supported set can suppress caching. In `USE_ORIGIN_HEADERS` mode the
-`Cache-Control` of `/media` and `/f` decides, but the documentation caps expiry (about 30 days), so a one year
-`immutable` will not hold as written; record the effective TTL. Prices were not retrieved and are not quoted here.
+`Cache-Control` of `/media` and `/f` decides. The effective TTL of `/media` (`max-age=31536000, immutable`, D6) is 30 days
+at the edge (the default cap; no TTL can be set in this mode) and one year in a browser, which receives the origin header
+unchanged. The edge copy goes on unpublish or delete through the purge (D100); a browser copy cannot be purged, as on
+every platform. Eviction before 30 days is possible and not measured. Prices were not retrieved and are not quoted here.

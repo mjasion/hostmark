@@ -3,8 +3,6 @@
 
 FROM node:22.23.4-slim AS build
 RUN npm install --global pnpm@12.15.0
-# Dependency build scripts stay off (esbuild ships its binary as a platform package); skipping must not fail.
-ENV pnpm_config_strict_dep_builds=false
 WORKDIR /repo
 COPY . .
 RUN pnpm install --frozen-lockfile --filter @hostmark/adapter-vps... --filter @hostmark/web...

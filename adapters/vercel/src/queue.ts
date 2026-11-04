@@ -58,28 +58,61 @@ export interface Metadata {
   deliveryCount: number;
 }
 
+/**
+ * Deliveries after the last attempt (D17) that only send the message to the dead letter topic. `vercel.json` sets the
+ * trigger's `maxDeliveries` to `MAX_DELIVERIES` (checked by `pnpm check`), so a message whose every delivery dies
+ * (a killer job: out of memory, `maxDuration`, a crash of the instance) or whose dead letter send keeps failing is not
+ * redelivered without end; the platform default is unlimited.
+ */
+export const DEAD_LETTER_DELIVERIES = 3;
+export const MAX_DELIVERIES = MAX_ATTEMPTS + DEAD_LETTER_DELIVERIES;
+
 export interface ConsumeOptions {
   handler: JobHandler;
-  /** Receives the raw message of a job that cannot succeed any more (Vercel Queues has no dead letter queue). */
-  deadLetter: (payload: unknown, reason: string) => Promise<void>;
+  /**
+   * Sends the raw message of a job that cannot succeed any more to the dead letter topic (Vercel Queues has none).
+   * Must throw when the send fails. `messageId` is the same on every delivery of a message (an idempotency key).
+   */
+  deadLetter: (payload: unknown, reason: string, messageId: string) => Promise<void>;
   log?: (msg: string, fields: Record<string, unknown>) => void;
 }
 
 /**
- * `handleCallback` body (D17 on Vercel Queues). The platform has no dead letter queue and only an unbounded retry
- * (`maxDeliveries` defaults to unlimited), so the adapter does both itself:
+ * `handleCallback` body (D17 on Vercel Queues, D198). The platform has no dead letter queue, so the adapter keeps one:
  * - `attempt` is `deliveryCount`; a throw is retried after the D17 backoff by `retryAfter` (the `retry` option).
  * - On attempt `MAX_ATTEMPTS`, or for a body that is no job message, the payload is sent to `<topic>-dlq` first and the
  *   delivery then returns normally, which acknowledges it. If that send fails the delivery throws and is retried.
+ * - A delivery after `MAX_ATTEMPTS` never runs the job again, it only dead-letters: the attempt before it either died
+ *   before it could (a killer job) or failed to send the copy. Running the job again would lose the copy, because core
+ *   has marked the file failed, so the job finds nothing to claim and returns, which acknowledges.
+ * - Only the last delivery (`MAX_DELIVERIES`) loses the copy, when its send fails too; that is logged with the payload.
  */
 export function createMessageProcessor(options: ConsumeOptions) {
   return async function process(payload: unknown, metadata: Metadata): Promise<void> {
     const attempt = Math.max(1, metadata.deliveryCount);
+    const deadLetter = async (reason: string) => {
+      try {
+        await options.deadLetter(payload, reason, metadata.messageId);
+      } catch (err) {
+        options.log?.(
+          attempt >= MAX_DELIVERIES
+            ? 'dead letter send failed on the last delivery, the copy is lost'
+            : 'dead letter send failed, retrying',
+          {
+            messageId: metadata.messageId,
+            attempt,
+            reason,
+            error: err instanceof Error ? err.message : String(err),
+            payload,
+          },
+        );
+        throw err;
+      }
+    };
     const parsed = JobMessage.safeParse(payload);
-    if (!parsed.success) {
-      await options.deadLetter(payload, `not a job message: ${parsed.error.message}`);
-      return;
-    }
+    if (!parsed.success) return deadLetter(`not a job message: ${parsed.error.message}`);
+    if (attempt > MAX_ATTEMPTS)
+      return deadLetter(`delivery ${attempt} after ${MAX_ATTEMPTS} attempts: the job is not run again`);
     try {
       await options.handler(parsed.data, {
         attempt,
@@ -96,7 +129,7 @@ export function createMessageProcessor(options: ConsumeOptions) {
         throw err;
       }
       options.log?.('job failed for good', { messageId: metadata.messageId, attempt, error });
-      await options.deadLetter(payload, error);
+      await deadLetter(error);
     }
   };
 }

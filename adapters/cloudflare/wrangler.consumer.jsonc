@@ -6,7 +6,9 @@
   "compatibility_date": "2026-08-06",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
-  "observability": { "enabled": true },
+  // Workers Logs and automatic traces (handler, fetch, bindings, service binding calls); export to an OTLP
+  // destination needs `traces.destinations` with a destination created in the dashboard (README, D254).
+  "observability": { "enabled": true, "traces": { "enabled": true } },
   "vars": {
     "ENVIRONMENT": "production",
     "APP_VERSION": "dev",

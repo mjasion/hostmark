@@ -3,9 +3,11 @@ import { createJobHandler } from '@hostmark/core';
 import { onTerminate } from '@hostmark/node-runtime/runtime';
 import { startConsumer } from './consumer';
 import { createRuntime } from './runtime';
+import { exitAfterDeadline, SHUTDOWN_DEADLINE_MS, withDeadline } from './shutdown';
 
 // A Cloud Run service must listen on PORT; the worker answers a health check there and nothing else. The service
-// runs with instance-based billing and a minimum of one instance, so the CPU stays allocated between messages.
+// runs with instance-based billing and a fixed instance count (manual scaling, D293), so the CPU stays allocated
+// between messages.
 const runtime = createRuntime('worker');
 const { env } = runtime;
 
@@ -35,8 +37,16 @@ runtime.telemetry.logger.info('worker started', {
   subscription: env.PUBSUB_SUBSCRIPTION,
 });
 
-onTerminate(async () => {
-  await consumer.close();
-  health.close();
-  await runtime.shutdown();
-});
+// Cloud Run kills the instance 10 s after SIGTERM. The consumer waits briefly for a running job, hands back what is
+// still held so that another instance gets it at once, and the process exits before the kill.
+onTerminate(
+  withDeadline(
+    async () => {
+      await consumer.close();
+      health.close();
+      await runtime.shutdown();
+    },
+    SHUTDOWN_DEADLINE_MS,
+    exitAfterDeadline,
+  ),
+);

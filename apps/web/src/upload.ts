@@ -1,10 +1,10 @@
+import { ApiError } from '@hostmark/contract/client';
 import {
   ALLOWED_CONTENT_TYPES,
   type AllowedContentType,
   MAX_UPLOAD_BYTES,
 } from '@hostmark/contract/constants';
-import { client, describeError } from './api';
-import { isUnauthorized } from './session';
+import { cancellableClient, describeError, sessionSignal } from './api';
 
 export class UploadError extends Error {
   constructor(
@@ -12,10 +12,30 @@ export class UploadError extends Error {
     readonly cancelled = false,
     /** The API answered 401: the session ended. */
     readonly unauthorized = false,
+    /** False when the file itself was refused, so sending it again cannot succeed. */
+    readonly retryable = true,
   ) {
     super(message);
     this.name = 'UploadError';
   }
+}
+
+/** Shown when Cancel stopped the wait for `complete`: the server may have queued the file before the abort. */
+export const CANCELLED_WHILE_COMPLETING =
+  'Cancelled. If the server had already accepted the file, it is processed and appears in your files.';
+
+/** API answers about the file itself (D10: type, size): the same file is refused again, so no Retry (D304). */
+const REFUSED = new Set([400, 413, 415]);
+
+function apiFailure(error: unknown, signal: AbortSignal, cancelled: string): UploadError {
+  if (signal.aborted) return new UploadError(cancelled, true);
+  const status = error instanceof ApiError ? error.status : undefined;
+  return new UploadError(
+    describeError(error),
+    false,
+    status === 401,
+    status === undefined || !REFUSED.has(status),
+  );
 }
 
 /** Same limits as the server (D10). The server stays the authority; this only fails early. */
@@ -77,18 +97,22 @@ export interface UploadHooks {
   signal: AbortSignal;
 }
 
-/** Create, PUT, complete (D10). Resolves with the file id; throws `UploadError` with a readable message. */
+/**
+ * Create, PUT, complete (D10). Resolves with the file id; throws `UploadError` with a readable message. Cancelling
+ * (the hook's signal) or the end of the session aborts whichever of the three is running (D302).
+ */
 export async function uploadFile(file: File, hooks: UploadHooks): Promise<string> {
   const invalid = validateFile(file);
-  if (invalid) throw new UploadError(invalid);
-  const { signal } = hooks;
+  if (invalid) throw new UploadError(invalid, false, false, false);
+  const signal = AbortSignal.any([hooks.signal, sessionSignal()]);
   if (signal.aborted) throw new UploadError('Upload cancelled.', true);
+  const api = cancellableClient(signal);
 
-  let created: Awaited<ReturnType<typeof client.createUpload>>;
+  let created: Awaited<ReturnType<typeof api.createUpload>>;
   try {
-    created = await client.createUpload({ contentType: file.type as AllowedContentType, bytes: file.size });
+    created = await api.createUpload({ contentType: file.type as AllowedContentType, bytes: file.size });
   } catch (e) {
-    throw new UploadError(describeError(e), false, isUnauthorized(e));
+    throw apiFailure(e, signal, 'Upload cancelled.');
   }
   hooks.onCreated?.(created.fileId);
 
@@ -97,11 +121,15 @@ export async function uploadFile(file: File, hooks: UploadHooks): Promise<string
   }
   if (signal.aborted) throw new UploadError('Upload cancelled.', true);
   await put(created.uploadUrl, created.uploadHeaders, file, hooks.onProgress, signal);
+  // Before complete, the row stays `pending_upload` and the cleanup removes it (D19, D86).
+  if (signal.aborted) throw new UploadError('Upload cancelled.', true);
 
   try {
-    await client.completeUpload(created.fileId);
+    await api.completeUpload(created.fileId);
   } catch (e) {
-    throw new UploadError(describeError(e), false, isUnauthorized(e));
+    // An aborted complete may still have reached the server, which then finishes it: the file is queued and
+    // processed like any other, or stays `pending_upload` for the cleanup if the request never arrived.
+    throw apiFailure(e, signal, CANCELLED_WHILE_COMPLETING);
   }
   return created.fileId;
 }

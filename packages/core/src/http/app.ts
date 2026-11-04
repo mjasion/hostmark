@@ -12,6 +12,7 @@ import {
   MAX_UPLOAD_BYTES,
   originalKey,
   RUM_MAX_BODY_BYTES,
+  SSE_HEARTBEAT_MS,
   SSE_MAX_DURATION_MS,
   SSE_POLL_INTERVAL_MS,
   STATS_DAYS,
@@ -37,6 +38,7 @@ import {
   DomainError,
   ForbiddenError,
   NotFoundError,
+  NotImplementedError,
   PayloadTooLargeError,
   ServiceUnavailableError,
   ValidationError,
@@ -49,6 +51,11 @@ import { probe } from './health';
 import { problemResponse, randomTraceId } from './problem';
 import { htmlResponse, PUBLIC_PAGE_CACHE, pageModel, pageOrigin, rumAttributes } from './public';
 import { publicPaths } from './purge';
+
+/** D6: a variant never changes under its URL. */
+export const MEDIA_CACHE = 'public, max-age=31536000, immutable';
+/** D205: the same for browsers, one minute for shared caches, when no purger can empty them. */
+export const MEDIA_CACHE_UNPURGEABLE = 'public, max-age=31536000, s-maxage=60, immutable';
 
 export interface AppOptions {
   /** Per dependency probe of `/api/health/deep`. */
@@ -146,9 +153,7 @@ export function createApp(
       );
       const res = problemResponse(c, 500, 'Internal Server Error', 'An unexpected error occurred');
       for (const [k, v] of Object.entries(knownHeaders)) res.headers.set(k, v);
-      if (c.req.path.startsWith('/api/')) res.headers.set('cache-control', 'private, no-store');
-      else if (c.req.path.startsWith('/media/') || c.req.path.startsWith('/f/'))
-        res.headers.set('cache-control', 'no-store');
+      res.headers.set('cache-control', c.req.path.startsWith('/api/') ? 'private, no-store' : 'no-store');
       c.res = res;
       return;
     }
@@ -193,6 +198,9 @@ export function createApp(
           // A CDN default could otherwise cache the 404 of a file that is about to become public.
           else if ((c.req.path.startsWith('/media/') || c.req.path.startsWith('/f/')) && status !== 200)
             headers['cache-control'] = 'no-store';
+          // D303: any other path reaches only the generic 404 (or an error); a CDN must not keep it either, or a
+          // file that the next deploy adds stays missing.
+          else if (status >= 400) headers['cache-control'] = 'no-store';
           withHeaders(c, headers);
         },
         { kind: SpanKind.SERVER },
@@ -481,6 +489,7 @@ export function createApp(
       const deadline = clock.now().getTime() + SSE_MAX_DURATION_MS;
       let current: FileRow | undefined = initial;
       let last = '';
+      let lastWrite = clock.now().getTime();
       while (!stream.aborted && !stream.closed) {
         if (current) {
           const event = toStatusEvent(current);
@@ -488,10 +497,17 @@ export function createApp(
           if (data !== last) {
             last = data;
             await stream.writeSSE({ event: 'status', data });
+            lastWrite = clock.now().getTime();
           }
           if (TERMINAL.has(current.status)) return;
         }
-        if (clock.now().getTime() >= deadline) return;
+        const now = clock.now().getTime();
+        if (now >= deadline) return;
+        // D236: a quiet stream still sends bytes, so no proxy times it out before the deadline above.
+        if (now - lastWrite >= SSE_HEARTBEAT_MS) {
+          await stream.write(': keepalive\n\n');
+          lastWrite = now;
+        }
         await clock.sleep(SSE_POLL_INTERVAL_MS);
         if (stream.aborted || stream.closed) return;
         try {
@@ -521,6 +537,18 @@ export function createApp(
   app.openapi(apiRoutes.debugCpu, async (c) => {
     const { ms } = c.req.valid('query');
     return c.json({ requestedMs: ms, ...(await burnCpu(ms)) }, 200);
+  });
+
+  // D206: the purge API of S12 and S15, the same on every platform: the platform's purger, behind the admin key.
+  app.openapi(apiRoutes.debugPurge, async (c) => {
+    const { purger, telemetry } = c.get('deps');
+    const { id } = c.req.valid('param');
+    if (!purger) throw new NotImplementedError('This deployment has no CDN purger');
+    await purger.purge(publicPaths(id)).catch((error) => {
+      telemetry.logger.error('cdn purge failed', { fileId: id, error });
+      throw new ServiceUnavailableError('The CDN could not be purged; retry');
+    });
+    return c.body(null, 204);
   });
 
   // D18: public, body size limited, attributes validated against closed lists by the schema.
@@ -566,7 +594,7 @@ export function createApp(
 
   // D6: public variants streamed through api so the CDN can cache them; the bucket stays private.
   app.get('/media/:id/:file', async (c) => {
-    const { db, storage } = c.get('deps');
+    const { db, storage, purger } = c.get('deps');
     const id = c.req.param('id');
     const file = c.req.param('file');
     const size = Number(MEDIA_FILE.exec(file)?.[1]);
@@ -592,7 +620,9 @@ export function createApp(
       headers: {
         'content-type': 'image/webp',
         'content-length': String(body.byteLength),
-        'cache-control': 'public, max-age=31536000, immutable',
+        // D205: without a purger nothing can take an unpublished file out of a shared cache, so CDNs keep it a
+        // minute; browsers keep it a year either way.
+        'cache-control': purger ? MEDIA_CACHE : MEDIA_CACHE_UNPURGEABLE,
       },
     });
   });

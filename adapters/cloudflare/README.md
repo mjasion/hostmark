@@ -41,55 +41,68 @@ set them on **all three** Workers.
 Bindings: `HYPERDRIVE` (id from `wrangler hyperdrive create`), `BUCKET` (R2), `QUEUE` (producer of `image-jobs`),
 `MEDIA` (service binding `hostmark-api#Media`, consumer and scheduler only), `ASSETS` (api only).
 
+The committed configs carry placeholders: `REPLACE_WITH_ACCOUNT_ID`, the all-zero Hyperdrive id and
+`https://hostmark.example.com`. `pnpm check` accepts them (it runs offline on the committed files); `pnpm check --deploy`,
+the production pipeline and the bootstrap refuse them (D255). Put your account id and `PUBLIC_URL` into the three files
+and commit them (they are not secrets); the bootstrap writes the Hyperdrive id.
+
 The client address header is fixed in code to `cf-connecting-ip`, which Cloudflare overwrites on every request
 (D80), and `createAuth` validates it at startup. Nothing to configure.
 
 ## Deploy (not done; needs consent)
 
-In this order, with `wrangler login` or `CLOUDFLARE_API_TOKEN` in your own shell:
+Needs the **Workers Paid** plan: on Free a request gets 10 ms of CPU (the image work needs seconds), and a queue keeps
+messages 24 hours at most. The first deploy is one command from a clean clone (acceptance criterion 1, D256); later
+releases go through `cloudflare-production.yml` with the gradual rollout (D142), which needs this first deploy.
 
 ```sh
-cd adapters/cloudflare
-# 1. Bucket, CORS for the browser upload, and the 8 day expiry (D74)
-npx wrangler r2 bucket create hostmark-files
-npx wrangler r2 bucket cors set hostmark-files --file r2/cors.json
-npx wrangler r2 bucket lifecycle add hostmark-files expire-originals originals/ --expire-days 8
-npx wrangler r2 bucket lifecycle add hostmark-files expire-variants variants/ --expire-days 8
-# 2. Queues
-npx wrangler queues create image-jobs
-npx wrangler queues create image-jobs-dlq
-# 3. Hyperdrive in front of the Neon database; put the printed id into the three configs.
-#    Keep --caching-disabled: Hyperdrive's query cache is not invalidated by writes (D106)
-npx wrangler hyperdrive create hostmark --connection-string "$DATABASE_URL" --caching-disabled
-# 4. Migrate and seed the database from the repository root (packages/db), with the same DATABASE_URL
-# 5. Web assets, then the Workers; the api first, because the others bind to hostmark-api#Media
-pnpm build
-npx wrangler secret put BETTER_AUTH_SECRET -c wrangler.api.jsonc    # also R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
-npx wrangler deploy -c wrangler.api.jsonc
-# repeat the secrets for the consumer and the scheduler, then
-npx wrangler deploy -c wrangler.consumer.jsonc
-npx wrangler deploy -c wrangler.scheduler.jsonc
+pnpm install
+# The values below in your own shell; nothing is written to disk except the Hyperdrive id (step 3)
+export CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=...
+export DATABASE_URL=...            # direct (unpooled) Neon endpoint: migrations, seed and Hyperdrive
+export BETTER_AUTH_SECRET=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=...
+pnpm --filter @hostmark/adapter-cloudflare bootstrap          # --dry-run prints the commands and runs none
 ```
 
-`r2/cors.json` allows `GET` and `PUT` with `Content-Type` from any origin, like the other adapters; narrow `origins`
-to `PUBLIC_URL` for a real deployment. The CORS file format is from the R2 documentation; the lifecycle commands
-come from `wrangler r2 bucket lifecycle add --help`. None of them was run against R2.
+`scripts/bootstrap.mjs` refuses to start while a variable or an owner value in the configs is missing, then:
 
-Replace `REPLACE_WITH_ACCOUNT_ID`, the Hyperdrive id and `PUBLIC_URL`. A route or custom domain for the api Worker
-is not in the config because it depends on your zone; add `routes` before pointing `PUBLIC_URL` at it.
+1. creates the bucket, sets CORS from `r2/cors.json` with `origins` narrowed to the origin of `PUBLIC_URL`, and adds
+   the 8 day expiry of `originals/` and `variants/` (D74);
+2. creates `image-jobs` and `image-jobs-dlq` with `--message-retention-period-secs 1209600` (14 days, the maximum;
+   an existing dead letter queue is updated to it);
+3. creates the Hyperdrive config `hostmark` with `--caching-disabled` (D106) and writes its id into the three configs:
+   **commit them**, the production pipeline deploys the committed files;
+4. runs `pnpm check --deploy`, then migrates and seeds the database (a generated `SEED_API_KEY` is printed once);
+5. builds the web assets, and for the api, the consumer and the scheduler, in that order (the others bind to
+   `hostmark-api#Media`): `wrangler secret bulk` with the three secrets as JSON on standard input (a Worker that does
+   not exist yet is created as a draft by it), then `wrangler deploy --var APP_VERSION:<sha>`;
+6. runs `wrangler triggers deploy` for the scheduler.
+
+A step that reports "already exists" counts as done, so a rerun after a failure continues. A rerun after the
+pipeline has taken over redeploys every Worker at 100%; use the pipeline instead. Secrets reach wrangler only on
+standard input, and the output is scrubbed of them, with one exception: `wrangler hyperdrive create` takes the
+database origin only as arguments, so `DATABASE_URL` is in the process list for the life of that command (masked in
+the output). Run the bootstrap on a machine you alone use. Not run against an account; tested with a fake wrangler
+(`test/bootstrap.test.ts`). The CORS format is from the R2 documentation; the lifecycle, queue, Hyperdrive, secret and
+trigger flags were read in the wrangler 4.157 source.
+
+A route or custom domain for the api Worker is not in the config because it depends on your zone; add `routes`
+before pointing `PUBLIC_URL` at it.
 
 ## Checks without an account
 
 ```sh
 pnpm check      # parses the three wrangler configs and runs `wrangler deploy --dry-run` on each, offline
+pnpm check --deploy   # the same, and refuses the committed placeholders (the production pipeline runs this)
 pnpm typecheck
 pnpm test       # Miniflare/workerd; the smoke test needs DATABASE_URL (a Postgres you started yourself)
-pnpm licenses   # regenerates licenses/THIRD-PARTY-LICENSES.txt
+pnpm run licenses   # regenerates licenses/THIRD-PARTY-LICENSES.txt
 ```
 
 `pnpm check` also asserts the carry-over rules: the secrets are not in `vars`, `ENVIRONMENT` is not `local`, the
 queue names and retry numbers equal `@hostmark/contract`, the cron triggers equal the scheduler jobs, the consumer has
-a dead letter queue and the `MEDIA` binding. This is the deploy-time guard for the purge wiring; at run time
+a dead letter queue and the `MEDIA` binding, the Media cache is shared across versions (D252) and automatic traces
+are on (D254). This is the deploy-time guard for the purge wiring; at run time
 `createWorkersCachePurger` refuses a `MEDIA` binding without a `purge` method (D100).
 
 ## What was proven, and how
@@ -97,7 +110,8 @@ a dead letter queue and the `MEDIA` binding. This is the deploy-time guard for t
 On `workerd` through Miniflare 4 (the real wrangler dry-run bundles, not test doubles):
 
 - **Queue contract** (`test/queue.test.ts`): delivery, ack, retry with the D17 backoff, the dead letter queue after
-  five attempts, and a crash that redelivers. 9 passed, 2 skipped (see D101).
+  five attempts, a crash that redelivers, and `ping` through the binding's `metrics()` (D253). 10 passed, 2 skipped
+  (see D101). The failing `ping` is tested with a fake binding (`test/consume.test.ts`).
 - **Storage contract** (`test/storage.test.ts`): R2 binding reads and writes. Presigned URLs are served by a small
   S3 shim in front of the same bucket, because Miniflare does not serve presigned R2 URLs; the capabilities that need
   real R2 are off in the contract and show as skips.
@@ -110,6 +124,12 @@ On `workerd` through Miniflare 4 (the real wrangler dry-run bundles, not test do
   invocation without touching the message.
 - **Configuration** (`test/env.test.ts`): the example secret is refused outside `local`, a missing `MEDIA` binding is
   refused by `createWorkersCachePurger`, a bad `clientIpHeader` is refused at startup.
+- **Static asset headers** (`test/headers.test.ts`): the generated `_headers` served by workerd's asset server, one
+  `Cache-Control` per file (D251).
+- **Trace id on cached paths** (`test/http.test.ts`): the gateway gives `/media` and `/f` responses their own
+  `x-trace-id` (D257).
+- **Deploy guards** (`test/check-config.test.ts`, `test/bootstrap.test.ts`): `check --deploy` refuses the
+  placeholders; the bootstrap's commands, order, stdin secrets and refusals against a fake wrangler.
 - The scheduler bundle is built and checked by `pnpm check` (cron triggers, `MEDIA` binding), but **no test runs it**.
 - The licence texts (Apache-2.0, BSD-3-Clause) are in the bundle; the wasm modules are static imports and are
   emitted as separate modules.
@@ -144,7 +164,9 @@ way out is a different image path, not a higher limit (E4 and the Cloudflare var
 `seedPublicFile` uses `jpeg-1mb`, S13 cannot reach ready). S1, S2, S3, S6, S7, S8, S10, S11 and S14 use no large
 fixture. **Acceptance criterion 4 is not met by the portable variant**, and ordinary phone photos are refused while
 `MAX_UPLOAD_BYTES` stays 10 MB. The fixtures are not shrunk and there is no per-platform override; this is an owner
-decision (`docs/decisions.md`, Open items).
+decision (`docs/decisions.md`, Open items). The one exception is the production pipeline's consumer check: it runs
+S4 `--short` with `UPLOAD_FIXTURE=jpeg-tiny.jpg`, a reduced run that proves the queue path works and is never a
+benchmark result (D250).
 
 To repeat the measurement: run `pnpm test` (it builds `.build/test/image-service`), copy that directory to
 `.build/measure/bundle`, write the JPEGs with `pnpm measure:pixels`, and run `scripts/measure-pixels.mjs` as described
@@ -168,22 +190,40 @@ in its header (a `node:22` container with `miniflare` installed in the mounted d
   deployment. The consumer sets `limits.cpu_ms` to 300000; whether that is accepted and enough is also unmeasured.
 - **Rate limiter.** Better Auth's sign-in limiter counts in memory per isolate, so on Workers it limits per isolate
   and not per client globally (D80). Moving it to a shared store is not done.
-- **Telemetry (D102).** There is no OpenTelemetry SDK provider on Workers here: spans and metrics are no-ops, logs
-  are JSON lines on `console` and appear in Workers Logs (`observability.enabled`).
-- **The dead letter queue has no consumer** in production. Dead letter messages are deleted after four days, so
-  inspect them within that time.
-- **Before any public deployment** (`docs/plan.md`, E3): the purge rate limit is 5 per minute per account on the Free
-  tier, each unpublish costs 1 call and each delete 2, `PATCH` purges even a file that was never public, and
-  `delete_file` purges every deleted file, so a burst is throttled and the jobs land in the dead letter queue (E).
-  A failed purge in `PATCH` has no durable retry (F); E and F need a `purge_pending` marker and a migration. There is
-  no purge route or `PURGE_URL` for S12 and S15, and a zone purge does not affect Workers Caching (C). `?x=1` is
-  answered 200 and cached, so a CDN keyed on the exact URL needs care (L). PNG headroom is 50 to 53 MB (JPEG 42 MB at
-  1.5 MP), the consumer has no `max_concurrency` and the JavaScript heap is unmeasured (M). Tests run on workerd
-  1.20260730.1 while wrangler 4.156 deploys against 1.20261023.1 (J). Rollback and old-version cache entries are
-  untested (N).
+- **Telemetry (D102, D254). Acceptance criterion 3 is not met and not proven.** There is no OpenTelemetry SDK
+  provider on Workers here: the app's own spans and metrics are no-ops, logs are JSON lines on `console` and appear in
+  Workers Logs. `observability.traces.enabled` turns on Cloudflare's automatic traces (handler, fetch, bindings, and
+  service binding calls, which Cloudflare joins into one trace), which can be exported over OTLP by adding the name of
+  a destination created in the dashboard to `observability.traces.destinations` in each config. Whether the queue
+  hop from `POST /api/uploads/:id/complete` to the consumer's `process_image` lands in the same trace is not
+  documented and not measured; the app's `traceparent` in the job message is not read by Cloudflare's tracing. The
+  app's spans are not bridged to `cloudflare:workers` `tracing`, because nothing offline can show the result.
+- **The dead letter queue has no consumer** in production. The bootstrap creates it with a retention of 14 days (the
+  Queues default is 4); inspect dead letters within that time.
+- **`x-trace-id` on `/media` and `/f` (D257).** Workers Caching stores a whole response and replays it without
+  running the Worker, so the gateway gives every response of these paths a new trace id. On a hit that id belongs to
+  no trace; on a miss it is not the id of the Media entrypoint's request. `no-store` responses (errors) keep theirs.
+- **CPU limits.** The api sets no `limits.cpu_ms`, so it gets the Workers Paid default of 30 s per request, the same
+  as the 30000 ms cap of `/api/debug/cpu` (D11): a call at the cap plus the request's own work can exceed it and end
+  in Cloudflare's error 1102 instead of the app's answer. Raise the api's `cpu_ms` if that scenario is run at the
+  cap. The consumer sets 300000 (the maximum); the scheduler keeps the default, which is 30 s for cron triggers.
+- **Before any public deployment** (`docs/plan.md`, E3): the purge rate limit is 5 per minute per account (Workers
+  Caching always gets the Free tier purge limits, whatever the plan), each unpublish costs 1 call and each delete 2,
+  `PATCH` purges even a file that was never public, and `delete_file` purges every deleted file, so a burst is
+  throttled and the jobs land in the dead letter queue (E). A failed purge in `PATCH` has no durable retry (F); E and
+  F need a `purge_pending` marker and a migration. S12 and S15 purge through `POST /api/debug/purge/{id}` (D206),
+  which calls the Media entrypoint's own purge, so `PURGE_URL` works here (C, the route half); a zone purge would not
+  touch Workers Caching. S12 and S15 still cannot set up on this variant because their seed image is refused (D103).
+  `?x=1` is answered 200 and cached, so a CDN keyed on the exact URL needs care (L). PNG headroom is 50 to 53 MB (JPEG
+  42 MB at 1.5 MP), the consumer has no `max_concurrency` and the JavaScript heap is unmeasured (M). Tests run on
+  workerd 1.20260730.1 (Miniflare 4.20260730.0, the newest 4.x, D248) while wrangler 4.157 deploys against
+  1.20261103.1 (J). With `cross_version_cache` (D252) every version of the api reads and purges one cache, so a
+  rollback serves the entries a newer version wrote until they are purged or expire; `/media` bodies do not depend on
+  the version, but this is untested on Cloudflare (N).
 - **Bundle size.** api 4.7 MiB (1.1 MiB gzip), consumer 4.4 MiB, scheduler 3.0 MiB as `wrangler deploy --dry-run`
-  reports them. The paid plan allows 10 MiB compressed, the free plan 3 MiB, so the free plan is not enough for the
-  api and the consumer.
+  reports them. Since 2026-09-04 the only limit is 64 MiB uncompressed on every plan (there is no compressed limit
+  any more), so size is no reason for a plan. Workers Paid is needed anyway, for CPU time (above) and queue
+  retention.
 - **Miniflare quirks.** The queue consumer option is spelled `maxRetires` in Miniflare. Computed `import()` in a
   dependency breaks its module scan, so `test/miniflare.ts` lists the bundle modules by hand.
 - **`test/build.ts` uses the stable Miniflare 4**, pinned; the 5 beta has a different option shape.

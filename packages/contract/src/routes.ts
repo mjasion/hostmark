@@ -199,6 +199,22 @@ export const debugCpuRoute = createRoute({
   },
 });
 
+export const debugPurgeRoute = createRoute({
+  method: 'post',
+  path: '/api/debug/purge/{id}',
+  tags: ['debug'],
+  summary: "Purge a file's public paths from the CDN (admin key only; S12 and S15)",
+  security,
+  request: { params: FileIdParam },
+  responses: {
+    204: { description: 'The CDN accepted the purge' },
+    ...authErrors,
+    403: problem('Not an admin'),
+    501: problem('This deployment has no CDN purger'),
+    503: problem('The CDN refused the purge; retry'),
+  },
+});
+
 export const rumRoute = createRoute({
   method: 'post',
   path: '/api/rum',
@@ -225,5 +241,6 @@ export const apiRoutes = {
   fileEvents: fileEventsRoute,
   stats: statsRoute,
   debugCpu: debugCpuRoute,
+  debugPurge: debugPurgeRoute,
   rum: rumRoute,
 } as const;

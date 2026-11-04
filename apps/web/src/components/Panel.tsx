@@ -1,8 +1,8 @@
 import type { FileResponse } from '@hostmark/contract';
 import { ALLOWED_CONTENT_TYPES, MAX_UPLOAD_BYTES, STATS_DAYS } from '@hostmark/contract/constants';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { type DragEvent, useRef, useState } from 'react';
+import { type DragEvent, useCallback, useRef, useState } from 'react';
 import { client, describeError, formatBytes } from '../api';
 import { type UploadItem, useUploads } from '../uploads';
 
@@ -146,9 +146,11 @@ function UploadRow({ item }: { item: UploadItem }) {
           <span role="alert" className="error">
             {item.error}
           </span>
-          <button type="button" onClick={() => retry(item.key)}>
-            Retry
-          </button>
+          {item.retryable !== false && (
+            <button type="button" onClick={() => retry(item.key)}>
+              Retry
+            </button>
+          )}
           <button type="button" onClick={() => dismiss(item.key)}>
             Dismiss
           </button>
@@ -156,7 +158,7 @@ function UploadRow({ item }: { item: UploadItem }) {
       )}
       {item.status === 'cancelled' && (
         <div className="row">
-          <span className="muted">Cancelled.</span>
+          <span className="muted">{item.error ?? 'Cancelled.'}</span>
           <button type="button" onClick={() => retry(item.key)}>
             Retry
           </button>
@@ -222,16 +224,29 @@ function Gallery() {
   );
 }
 
-/** Presigned URLs change on every fetch; keep the first one so polling does not reload the image. */
+/**
+ * Presigned URLs change on every fetch; keep the first one so polling does not reload the image. A lazy image first
+ * scrolled to after its URL expired fails to load: then the list is fetched again, once, and the next URL replaces
+ * the failed one (D304).
+ */
 function useStableUrl(url: string | undefined) {
+  const qc = useQueryClient();
   const ref = useRef(url);
+  const failed = useRef<string | undefined>(undefined);
   if (!ref.current) ref.current = url;
-  return ref.current;
+  if (failed.current && ref.current === failed.current && url && url !== failed.current) ref.current = url;
+  const onError = useCallback(() => {
+    if (failed.current) return;
+    failed.current = ref.current;
+    // Every expired thumbnail of the page fails at about the same time; they share one refetch.
+    void qc.refetchQueries({ queryKey: ['files'] }, { cancelRefetch: false });
+  }, [qc]);
+  return { src: ref.current, onError };
 }
 
 export function Thumb({ file, duplicate }: { file: FileResponse; duplicate: boolean }) {
   const variant = file.variants.find((v) => v.size === 128);
-  const src = useStableUrl(variant?.url);
+  const { src, onError } = useStableUrl(variant?.url);
   return (
     <li>
       <Link to="/app/files/$id" params={{ id: file.id }} className="thumb">
@@ -242,6 +257,7 @@ export function Thumb({ file, duplicate }: { file: FileResponse; duplicate: bool
             width={128}
             height={128}
             loading="lazy"
+            onError={onError}
           />
         ) : (
           <span className={`placeholder ${file.status}`}>{statusLabel(file.status)}</span>

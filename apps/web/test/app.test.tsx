@@ -501,6 +501,32 @@ describe('final fix round', () => {
       expect(router.state.location.pathname).toBe('/app');
       expect(sessionOf(router)).not.toBeNull();
     });
+
+    it('keeps the session, the row and Retry when the PUT to storage fails', async () => {
+      const { router } = mount('/app', uploadRoutes());
+      await pick(createFile());
+      await waitFor(() => expect(FakeXHR.instances).toHaveLength(1));
+      act(() => FakeXHR.last().finish(500));
+      expect((await screen.findByRole('alert')).textContent).toBe('Storage rejected the upload (HTTP 500).');
+      screen.getByRole('button', { name: 'Retry' });
+      expect(router.state.location.pathname).toBe('/app');
+      expect(sessionOf(router)).not.toBeNull();
+    });
+
+    it('keeps the session, the row and Retry when complete fails', async () => {
+      const { router } = mount('/app', {
+        ...uploadRoutes(),
+        [`POST /api/uploads/${FILE_ID}/complete`]: () =>
+          problem(503, 'Service Unavailable', 'Could not enqueue the job'),
+      });
+      await pick(createFile());
+      await waitFor(() => expect(FakeXHR.instances).toHaveLength(1));
+      act(() => FakeXHR.last().finish(200));
+      expect((await screen.findByRole('alert')).textContent).toBe('Could not enqueue the job');
+      screen.getByRole('button', { name: 'Retry' });
+      expect(router.state.location.pathname).toBe('/app');
+      expect(sessionOf(router)).not.toBeNull();
+    });
   });
 
   it.each([[500], [503]])('keeps the user signed in when a query answers %i', async (status) => {
@@ -542,5 +568,196 @@ describe('final fix round', () => {
       const img = await preview(300, 200, 512)();
       expect([img.getAttribute('width'), img.getAttribute('height')]).toEqual(['300', '200']);
     });
+  });
+});
+
+describe('E1 gaps (D302, D304)', () => {
+  const sessionOf = (router: ReturnType<typeof mount>['router']) =>
+    router.options.context.queryClient.getQueryData(['session']);
+  const completePath = `/api/uploads/${FILE_ID}/complete`;
+
+  describe('file not found', () => {
+    it.each(['not-a-uuid', '..%2f..%2fetc', '..%2F..%2Fetc%2Fpasswd', `${FILE_ID}x`])(
+      'shows it for /app/files/%s without asking the API',
+      async (id) => {
+        const { calls } = mount(`/app/files/${id}`, panelRoutes());
+        await screen.findByRole('heading', { name: 'File not found' });
+        expect(screen.getByRole('link', { name: 'Back to files' }).getAttribute('href')).toBe('/app');
+        expect(calls.filter((c) => c.path.startsWith('/api/files/'))).toEqual([]);
+        expect(FakeEventSource.instances).toHaveLength(0);
+      },
+    );
+
+    it.each([
+      [404, 'Not Found', 'File not found'],
+      [400, 'Bad Request', 'Request validation failed'],
+    ])('shows it when the API answers %i', async (status, title, detail) => {
+      mount(`/app/files/${FILE_ID}`, {
+        ...panelRoutes(),
+        [`GET /api/files/${FILE_ID}`]: () => problem(status, title, detail),
+      });
+      await screen.findByRole('heading', { name: 'File not found' });
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    it('still shows other errors as they are', async () => {
+      mount(`/app/files/${FILE_ID}`, {
+        ...panelRoutes(),
+        [`GET /api/files/${FILE_ID}`]: () => problem(500, 'Internal Server Error', 'Try again later'),
+      });
+      expect((await screen.findByRole('alert')).textContent).toBe('Try again later');
+      expect(screen.queryByRole('heading', { name: 'File not found' })).toBeNull();
+    });
+  });
+
+  describe('Retry', () => {
+    it('is not offered for a file refused before any request', async () => {
+      mount('/app', panelRoutes());
+      await pick(createFile('a.gif', 'image/gif'));
+      await screen.findByRole('alert');
+      expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+      screen.getByRole('button', { name: 'Dismiss' });
+    });
+
+    it.each([
+      [413, 'Declared size exceeds 10485760 bytes'],
+      [400, 'Request validation failed'],
+    ])('is not offered when the API refuses the file with %i', async (status, detail) => {
+      mount('/app', { ...uploadRoutes(), 'POST /api/uploads': () => problem(status, 'Refused', detail) });
+      await pick(createFile());
+      expect((await screen.findByRole('alert')).textContent).toBe(detail);
+      expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    });
+
+    it('is not offered when complete finds the stored object too large', async () => {
+      mount('/app', {
+        ...uploadRoutes(),
+        [`POST ${completePath}`]: () =>
+          problem(413, 'Payload Too Large', 'Uploaded object exceeds 10485760 bytes'),
+      });
+      await pick(createFile());
+      await waitFor(() => expect(FakeXHR.instances).toHaveLength(1));
+      act(() => FakeXHR.last().finish(200));
+      await screen.findByText('Uploaded object exceeds 10485760 bytes');
+      expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+    });
+  });
+
+  it('cancels a running complete: the request is aborted and the list is checked again', async () => {
+    const { calls } = mount('/app', {
+      ...uploadRoutes(),
+      [`POST ${completePath}`]: () => new Promise<Response>(() => {}),
+    });
+    await screen.findByText('No files yet. Upload an image to get started.');
+    await pick(createFile());
+    await waitFor(() => expect(FakeXHR.instances).toHaveLength(1));
+    act(() => FakeXHR.last().finish(200));
+    await waitFor(() => expect(calls.some((c) => c.path === completePath)).toBe(true));
+    const lists = calls.filter((c) => c.path === '/api/files').length;
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await screen.findByText(/^Cancelled\. If the server had already accepted the file/);
+    expect(calls.find((c) => c.path === completePath)?.init.signal?.aborted).toBe(true);
+    await waitFor(() => expect(calls.filter((c) => c.path === '/api/files').length).toBeGreaterThan(lists));
+    screen.getByRole('button', { name: 'Retry' });
+  });
+
+  it('closes the event stream at sign-out, before the page unmounts', async () => {
+    let signedIn = true;
+    mount(`/app/files/${FILE_ID}`, {
+      ...panelRoutes(),
+      // After sign-out the session check of /login never answers, so the file page stays mounted.
+      'GET /api/auth/get-session': () => (signedIn ? json(session) : new Promise<Response>(() => {})),
+      'POST /api/auth/sign-out': () => {
+        signedIn = false;
+        return json({ success: true });
+      },
+      [`GET /api/files/${FILE_ID}`]: () => json(fileJson({ status: 'processing' })),
+    });
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    act(() => FakeEventSource.instances[0]?.open());
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    await waitFor(() => expect(FakeEventSource.open).toHaveLength(0));
+    // Still on the file page: the sign-out closed the stream, not an unmount.
+    expect(screen.getByTestId('status').textContent).toBe('Processing');
+  });
+
+  it('a complete left running by a signed-out user cannot sign out the next one', async () => {
+    let user: 'a' | 'b' | null = 'a';
+    let answer: (res: Response) => void = () => {};
+    const { router, calls } = mount('/app', {
+      ...uploadRoutes(),
+      'GET /api/auth/get-session': () =>
+        json(user ? { user: { id: user, email: `${user}@x.test`, name: user } } : null),
+      'POST /api/auth/sign-out': () => {
+        user = null;
+        return json({ success: true });
+      },
+      'POST /api/auth/sign-in/email': () => {
+        user = 'b';
+        return json({ token: 't' });
+      },
+      [`POST ${completePath}`]: () => new Promise<Response>((resolve) => (answer = resolve)),
+    });
+    await screen.findByText('No files yet. Upload an image to get started.');
+    await pick(createFile());
+    await waitFor(() => expect(FakeXHR.instances).toHaveLength(1));
+    act(() => FakeXHR.last().finish(200));
+    await waitFor(() => expect(calls.some((c) => c.path === completePath)).toBe(true));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/login'));
+    expect(calls.find((c) => c.path === completePath)?.init.signal?.aborted).toBe(true);
+
+    fireEvent.change(await screen.findByLabelText('Email'), { target: { value: 'b@x.test' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'correct horse' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }));
+    await screen.findByText('No files yet. Upload an image to get started.');
+
+    // The server finally answers A's complete, with a 401.
+    answer(problem(401, 'Unauthorized', 'Missing credentials'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(router.state.location.pathname).toBe('/app');
+    expect(sessionOf(router)).toMatchObject({ user: { id: 'b' } });
+  });
+
+  it('loads an expired lazy thumbnail again, once, with a fresh URL', async () => {
+    let lists = 0;
+    mount('/app', {
+      ...panelRoutes(),
+      'GET /api/files': () => {
+        lists++;
+        const variants = [{ size: 128, url: `http://s.test/thumb-${lists}`, bytes: 1 }];
+        return json({ items: [fileJson({ status: 'ready', variants })], nextCursor: null });
+      },
+    });
+    const thumb = () => screen.getByAltText(/Thumbnail of file/);
+    await screen.findByAltText(/Thumbnail of file/);
+    expect(thumb().getAttribute('src')).toBe('http://s.test/thumb-1');
+    fireEvent.error(thumb());
+    await waitFor(() => expect(thumb().getAttribute('src')).toBe('http://s.test/thumb-2'));
+    expect(lists).toBe(2);
+    // The fresh URL fails too: no loop.
+    fireEvent.error(thumb());
+    await new Promise((r) => setTimeout(r, 100));
+    expect(lists).toBe(2);
+    expect(thumb().getAttribute('src')).toBe('http://s.test/thumb-2');
+  });
+
+  it('shows the file dates in English', async () => {
+    mount(`/app/files/${FILE_ID}`, {
+      ...panelRoutes(),
+      [`GET /api/files/${FILE_ID}`]: () =>
+        json(
+          fileJson({
+            status: 'ready',
+            createdAt: '2026-01-01T12:00:00.000Z',
+            expiresAt: '2026-01-08T12:00:00.000Z',
+          }),
+        ),
+    });
+    const value = (term: string) => screen.getByText(term).nextElementSibling?.textContent ?? '';
+    await screen.findByText('Uploaded');
+    expect(value('Uploaded')).toMatch(/^Jan 1, 2026, \d{1,2}:\d{2}\s[AP]M$/);
+    expect(value('Expires')).toMatch(/^Jan 8, 2026, \d{1,2}:\d{2}\s[AP]M$/);
   });
 });

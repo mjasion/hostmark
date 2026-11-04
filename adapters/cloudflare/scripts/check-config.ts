@@ -1,11 +1,17 @@
 // Offline validation of the three wrangler configs: no network, no account, nothing is deployed.
-//   node --import tsx scripts/check-config.ts
+//   node --import tsx scripts/check-config.ts            (pnpm check: the committed configs, placeholders allowed)
+//   node --import tsx scripts/check-config.ts --deploy   (pnpm check --deploy: also refuses the placeholders, D255)
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 import { BACKOFF_SECONDS, DLQ_NAME, MAX_ATTEMPTS, QUEUE_NAME, SCHEDULER_JOBS } from '@hostmark/contract';
+import { placeholderProblems } from './placeholders.mjs';
+
+// `--deploy` is the mode of the production pipeline and of the bootstrap: the configs must hold the owner's values.
+const { values: flags } = parseArgs({ options: { deploy: { type: 'boolean', default: false } } });
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const problems: string[] = [];
@@ -63,6 +69,16 @@ for (const name of services) {
     c.vars.R2_BUCKET_NAME === c.r2_buckets[0]?.bucket_name,
     `${name}: R2_BUCKET_NAME differs from the bucket binding`,
   );
+  // Workers Logs and the automatic traces (D254).
+  const observability = (
+    c as unknown as { observability?: { enabled?: boolean; traces?: { enabled?: boolean } } }
+  ).observability;
+  expect(observability?.enabled === true, `${name}: observability.enabled must be true`);
+  expect(
+    observability?.traces?.enabled === true,
+    `${name}: observability.traces.enabled must be true (D254)`,
+  );
+  if (flags.deploy) problems.push(...placeholderProblems(name, c));
   if (name !== 'api') {
     const media = c.services.find((s: { binding: string }) => s.binding === 'MEDIA');
     expect(
@@ -78,6 +94,10 @@ const exportsMap =
   (api as unknown as { exports?: Record<string, { cache?: { enabled?: boolean } }> }).exports ?? {};
 expect(exportsMap.Media?.cache?.enabled === true, 'api: exports.Media.cache.enabled must be true');
 expect(exportsMap.default?.cache?.enabled === false, 'api: exports.default.cache.enabled must be false');
+// D252: one cache for every version of the api, so a purge from any version reaches every entry.
+const workerCache = (api as unknown as { cache?: { enabled?: boolean; cross_version_cache?: boolean } })
+  .cache;
+expect(workerCache?.cross_version_cache === true, 'api: cache.cross_version_cache must be true (D252)');
 expect(api.assets?.binding === 'ASSETS', 'api: ASSETS binding is missing');
 const first = api.assets?.run_worker_first;
 expect(
@@ -128,4 +148,4 @@ if (problems.length > 0) {
   console.error(`${problems.length} problem(s):\n- ${problems.join('\n- ')}`);
   process.exit(1);
 }
-console.log('wrangler configs valid (offline)');
+console.log(`wrangler configs valid (offline${flags.deploy ? ', deploy mode: no placeholders' : ''})`);

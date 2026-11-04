@@ -24,7 +24,13 @@ describe('platform', () => {
       S3_ACCESS_KEY_ID: 'tid_key',
       S3_SECRET_ACCESS_KEY: 'tsec_secret',
       S3_REGION: 'auto',
+      S3_VIRTUAL_HOST: 'true',
     });
+  });
+
+  it('uses virtual-hosted-style S3 URLs, which Tigris requires, unless set otherwise (D280)', () => {
+    expect(platform.env?.(tigris)?.S3_VIRTUAL_HOST).toBe('true');
+    expect(platform.env?.({ ...tigris, S3_VIRTUAL_HOST: 'false' })?.S3_VIRTUAL_HOST).toBe('false');
   });
 
   it('lets explicit S3 settings win, and ignores empty ones', () => {

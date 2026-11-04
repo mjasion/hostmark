@@ -67,6 +67,12 @@ export class InvalidImageError extends DomainError {
   }
 }
 
+export class NotImplementedError extends DomainError {
+  constructor(detail?: string, options?: ErrorOptions) {
+    super(501, 'not_implemented', 'Not Implemented', detail, options);
+  }
+}
+
 export class ServiceUnavailableError extends DomainError {
   constructor(detail?: string, options?: ErrorOptions) {
     super(503, 'service_unavailable', 'Service Unavailable', detail, options);

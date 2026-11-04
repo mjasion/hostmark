@@ -46,6 +46,37 @@ describe('docker-compose.yml', () => {
     );
   });
 
+  it('gives the app a bucket-scoped MinIO user and the root pair only to the init jobs (D287)', () => {
+    const app = ['api', 'worker', 'scheduler', 'migrate', 'seed'];
+    for (const name of app) {
+      expect(compose.services[name].environment.S3_ACCESS_KEY_ID, name).toContain('MINIO_APP_USER');
+      expect(compose.services[name].environment.S3_SECRET_ACCESS_KEY, name).toContain('MINIO_APP_PASSWORD');
+    }
+    expect(compose.services['minio-init'].environment.S3_ACCESS_KEY_ID).toContain('MINIO_ROOT_USER');
+    const user = compose.services['minio-user'];
+    expect(user.image).toBe(compose.services.minio.image);
+    expect(compose.services['minio-init'].depends_on['minio-user'].condition).toBe(
+      'service_completed_successfully',
+    );
+    const script = user.command.join('\n');
+    expect(script).toContain('mc admin policy attach local hostmark-app --user');
+    // Objects of the one bucket and listing it; no s3:* wildcard, no bucket or admin action.
+    const actions = [...script.matchAll(/"(s3:[A-Za-z*]+)"/g)].map((m) => m[1]).sort();
+    expect(actions).toEqual([
+      's3:DeleteObject',
+      's3:GetBucketLocation',
+      's3:GetObject',
+      's3:ListBucket',
+      's3:PutObject',
+    ]);
+    expect(script).toContain('arn:aws:s3:::$$S3_BUCKET/*');
+  });
+
+  it('mounts the Caddyfile from a path the deploy keeps the same for every release (D285)', () => {
+    const mount = compose.services.caddy.volumes.find((v: string) => v.endsWith(':/etc/caddy/Caddyfile:ro'));
+    expect(mount).toBe(`\${CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro`);
+  });
+
   it('has no Postgres container: the portable variants use the shared database', () => {
     expect(compose.services.postgres).toBeUndefined();
     expect(compose.services.api.environment.DATABASE_URL).toContain('DATABASE_URL');
@@ -57,6 +88,17 @@ describe('Caddyfile', () => {
     const text = read('Caddyfile');
     expect(text).toContain(`header_up ${CLIENT_IP_HEADER} {remote_host}`);
     expect(text).toContain('reverse_proxy api:8080');
+  });
+
+  it('retries the api for 15 s while a deploy replaces it, instead of answering 502 (D286)', () => {
+    const app = read('Caddyfile').split('{$S3_DOMAIN}')[0] ?? '';
+    expect(app).toMatch(/^\s*lb_try_duration 15s$/m);
+    expect(app).toMatch(/^\s*lb_try_interval 250ms$/m);
+  });
+
+  it('compresses the app responses, as the CDNs of the other platforms do (D208)', () => {
+    const app = read('Caddyfile').split('{$S3_DOMAIN}')[0] ?? '';
+    expect(app).toMatch(/^\s*encode zstd gzip$/m);
   });
 });
 

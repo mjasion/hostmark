@@ -9,8 +9,10 @@ x-app-env: &app-env
   S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-https://${S3_DOMAIN:?}}
   S3_BUCKET: ${S3_BUCKET:?}
   S3_REGION: us-east-1
-  S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
-  S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
+  # The app's own MinIO user, limited to the objects of S3_BUCKET (minio-user, D287). The root pair is used only by
+  # minio-user and minio-init.
+  S3_ACCESS_KEY_ID: ${MINIO_APP_USER:?set it in .env}
+  S3_SECRET_ACCESS_KEY: ${MINIO_APP_PASSWORD:?set it in .env}
   OTLP_ENDPOINT: ${OTLP_ENDPOINT:-}
   ENVIRONMENT: production
   WORKER_CONCURRENCY: "1"
@@ -42,7 +44,9 @@ services:
       - 443:443
       - 443:443/udp
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # The deploy script points CADDYFILE at one path for every release (~/hostmark/Caddyfile) and reloads Caddy, so
+      # a release does not change this mount and Compose keeps the container (D285). A manual run uses ./Caddyfile.
+      - ${CADDYFILE:-./Caddyfile}:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
@@ -64,7 +68,9 @@ services:
 
   minio:
     restart: unless-stopped
-    image: cgr.dev/chainguard/minio@sha256:3b6e40c30ecd5cea627e382ff0b82ca841f58c52294578787043ee80c8ef7c82
+    # Chainguard's build of MinIO, pinned by digest (the one adapters/local uses). Check before enabling the platform
+    # that the image is still maintained and the digest current (README, "MinIO image"; D288).
+    image: &minio-image cgr.dev/chainguard/minio@sha256:3b6e40c30ecd5cea627e382ff0b82ca841f58c52294578787043ee80c8ef7c82
     command: ["server", "/data"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
@@ -74,14 +80,61 @@ services:
     volumes:
       - minio-data:/data
 
-  # Bucket, D74 lifecycle rule (originals/ and variants/ expire after 8 days) and CORS. Idempotent.
+  # The app's MinIO user and its policy: objects of S3_BUCKET and listing it, nothing else (no bucket creation,
+  # lifecycle, CORS, other buckets or admin calls). Idempotent: the policy is replaced and the password set again on
+  # every run, so a new MINIO_APP_PASSWORD in .env rotates it (D287). `mc` ships in the MinIO image.
+  minio-user:
+    image: *minio-image
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        [ "$$MINIO_APP_USER" != "$$MINIO_ROOT_USER" ] || { echo "MINIO_APP_USER must differ from MINIO_ROOT_USER" >&2; exit 2; }
+        i=0
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+          i=$$((i + 1)); [ "$$i" -lt 60 ] || { echo "MinIO did not answer within 60 s" >&2; exit 1; }; sleep 1
+        done
+        cat > /tmp/policy.json <<EOF
+        {"Version": "2012-10-17", "Statement": [
+          {"Effect": "Allow", "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"], "Resource": ["arn:aws:s3:::$$S3_BUCKET/*"]},
+          {"Effect": "Allow", "Action": ["s3:ListBucket", "s3:GetBucketLocation"], "Resource": ["arn:aws:s3:::$$S3_BUCKET"]}
+        ]}
+        EOF
+        mc admin policy create local hostmark-app /tmp/policy.json
+        mc admin user add local "$$MINIO_APP_USER" "$$MINIO_APP_PASSWORD" >/dev/null
+        # Older mc versions refuse to attach a policy that is attached already; the image has no grep.
+        if ! mc admin policy attach local hostmark-app --user "$$MINIO_APP_USER" >/dev/null 2>/tmp/attach.err; then
+          case "$$(mc admin user info local "$$MINIO_APP_USER" --json)" in
+            *'"hostmark-app'*) ;;
+            *) cat /tmp/attach.err >&2; exit 1 ;;
+          esac
+        fi
+        echo "MinIO user $$MINIO_APP_USER: policy hostmark-app on bucket $$S3_BUCKET"
+    environment:
+      MC_CONFIG_DIR: /tmp/mc
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+      MINIO_APP_USER: ${MINIO_APP_USER:?}
+      MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:?}
+      S3_BUCKET: ${S3_BUCKET:?}
+    depends_on:
+      minio:
+        condition: service_started
+
+  # Bucket, D74 lifecycle rule (originals/ and variants/ expire after 8 days) and CORS. Idempotent. The only app
+  # container with the root pair: creating a bucket and setting its lifecycle are not granted to the app user.
   minio-init:
     <<: *app
     command: ["node", "dist/init-bucket.js"]
     restart: "no"
+    environment:
+      <<: *app-env
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?}
     depends_on:
-      minio:
-        condition: service_started
+      minio-user:
+        condition: service_completed_successfully
 
   migrate:
     <<: *app
@@ -151,7 +204,7 @@ services:
       redis:
         condition: service_healthy
 
-  # Exactly one scheduler: croner's protect works inside one process only, so a second replica runs every job twice.
+  # One scheduler. A second replica would only wait on the Postgres advisory lock (D204), so one is enough.
   # There is no `deploy.replicas` here on purpose; the compose test fails if one appears.
   scheduler:
     <<: *app

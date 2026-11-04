@@ -80,6 +80,7 @@ All are optional locally unless noted.
 | `VISITS`, `TTFB_P95_MS`, `LCP_P95_MS`                                                                  | S10                                                                                                                    |
 | `RUNS`, `FLOW_P95_MS`, `INP_MAX_MS`                                                                    | S13                                                                                                                    |
 | `P95_MS`, `READY_P95_MS`                                                                               | Latency bounds of the k6 thresholds (a slower platform gets its own bound explicitly)                                  |
+| `UPLOAD_FIXTURE`                                                                                       | S4 only: another fixture file (for example `jpeg-tiny.jpg`) for a deployment check; the run is then reduced (D250)     |
 | `LOAD_ACK_PURGE_HOST`                                                                                  | A `PURGE_URL` host other than the target's needs this acknowledgement (a loopback target needs a loopback `PURGE_URL`) |
 | `HM_LOCAL_DEPLOY`                                                                                      | `1`: S14 rebuilds and recreates the local api (below)                                                                  |
 | `HM_LOAD_NETWORK`, `HM_COMPOSE_PROJECT`, `STORE_PORT`, `K6_IMAGE`, `PLAYWRIGHT_IMAGE`, `FORWARD_IMAGE` | Plumbing of `run.mjs`: network mode, compose project name (`hostmark`), object store port to forward (`59000`), images |
@@ -182,6 +183,9 @@ Notes that change how a number reads:
   (`passed: null`, with `skipped.reason`); it exits 0 and the summary line says SKIPPED. With it, the page must be a
   cache hit before the purge; if it never was, the run aborts and fails (`aborted` event). A `PURGE_URL` on another
   host than the target needs `LOAD_ACK_PURGE_HOST`, and a loopback target accepts only a loopback `PURGE_URL`.
+  Every platform with a purger offers the same purge API (D206): `PURGE_URL='{base}/api/debug/purge/{id}'`,
+  `PURGE_METHOD=POST` and `PURGE_TOKEN` set to an admin API key. It answers 204, or 501 where the deployment has no
+  CDN (local, VPS, Fly, Railway).
 - **S10, S13** run in the Playwright image as the host user. The repository is mounted read-only; specs are copied
   to a scratch directory with `node_modules` linked to `apps/web/node_modules` (the browser is not launchable on the
   macOS host). INP is approximated from Event Timing: the worst interaction on the single page app.

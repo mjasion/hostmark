@@ -1,10 +1,12 @@
 {
-  "_comment": "Settings of the three Railway services, to enter in the dashboard (or send with serviceInstanceUpdate / `railway environment edit --service-config`, unverified). Not read by Railway: Config as Code is deprecated and new services cannot use it. Key names follow the former railway.json deploy section; memory is in bytes. The adapter test checks these values.",
+  "_comment": "Settings of the three Railway services. Not read by Railway: Config as Code is deprecated and new services cannot use it. scripts/deploy.mjs sends dockerfilePath, drainingSeconds, overlapSeconds and healthcheckTimeout as the service variables Railway reads (RAILWAY_DOCKERFILE_PATH, RAILWAY_DEPLOYMENT_DRAINING_SECONDS, RAILWAY_DEPLOYMENT_OVERLAP_SECONDS, RAILWAY_HEALTHCHECK_TIMEOUT_SEC, D283); the rest (region, start and pre-deploy command, pre-deploy timeout, replicas, health path, restart policy, memory) is entered in the dashboard. Key names follow the former railway.json deploy section; memory is in bytes. The adapter test checks these values.",
   "dockerfilePath": "adapters/railway/Dockerfile",
+  "region": "europe-west4-drams3a",
   "services": {
     "api": {
       "startCommand": "node --enable-source-maps dist/api.js",
       "preDeployCommand": "sh -c 'node dist/init-bucket.js && node dist/migrate.js && node dist/seed.js'",
+      "preDeployTimeoutSeconds": 600,
       "numReplicas": 1,
       "healthcheckPath": "/api/health",
       "healthcheckTimeout": 60,

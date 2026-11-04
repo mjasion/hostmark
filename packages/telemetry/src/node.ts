@@ -26,6 +26,12 @@ export interface NodeTelemetryOptions {
 export interface NodeTelemetry {
   shutdown(): Promise<void>;
   /**
+   * Exports what the span and log processors hold and what the metric reader has collected so far, without stopping
+   * anything. For a runtime that freezes the process between requests (Vercel functions), where a batch would
+   * otherwise wait for the next request. Resolves at once when nothing is exported.
+   */
+  flush(): Promise<void>;
+  /**
    * Sink for `createTelemetry(service, { write })`: prints the line and forwards it as an OTLP log record.
    * It must be called inside the active span for the record to carry the trace context.
    */
@@ -65,28 +71,33 @@ export function startNodeTelemetry(opts: NodeTelemetryOptions): NodeTelemetry {
   // An empty processor list makes NodeSDK skip the tracer provider, so the no-export case needs a
   // no-op processor to still get valid trace ids. Empty readers/processors also stop NodeSDK from
   // falling back to OTEL_* environment defaults.
+  const spanProcessor = exporting
+    ? new BatchSpanProcessor({ exporter: new OTLPTraceExporter({ url: `${base}/v1/traces` }) })
+    : new NoopSpanProcessor();
+  const metricReader = exporting
+    ? new PeriodicExportingMetricReader({
+        exporter: new OTLPMetricExporter({ url: `${base}/v1/metrics` }),
+        exportIntervalMillis: 15_000,
+      })
+    : undefined;
+  const logProcessor = exporting
+    ? new BatchLogRecordProcessor({ exporter: new OTLPLogExporter({ url: `${base}/v1/logs` }) })
+    : undefined;
   const sdk = new NodeSDK({
     resource,
     autoDetectResources: false,
-    spanProcessors: exporting
-      ? [new BatchSpanProcessor({ exporter: new OTLPTraceExporter({ url: `${base}/v1/traces` }) })]
-      : [new NoopSpanProcessor()],
-    metricReaders: exporting
-      ? [
-          new PeriodicExportingMetricReader({
-            exporter: new OTLPMetricExporter({ url: `${base}/v1/metrics` }),
-            exportIntervalMillis: 15_000,
-          }),
-        ]
-      : [],
-    logRecordProcessors: exporting
-      ? [new BatchLogRecordProcessor({ exporter: new OTLPLogExporter({ url: `${base}/v1/logs` }) })]
-      : [],
+    spanProcessors: [spanProcessor],
+    metricReaders: metricReader ? [metricReader] : [],
+    logRecordProcessors: logProcessor ? [logProcessor] : [],
   });
   sdk.start();
 
   return {
     shutdown: () => sdk.shutdown(),
+    async flush() {
+      if (!exporting) return;
+      await Promise.all([spanProcessor.forceFlush(), metricReader?.forceFlush(), logProcessor?.forceFlush()]);
+    },
     write(line) {
       console.log(line);
       if (!exporting) return;

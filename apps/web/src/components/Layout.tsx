@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Outlet, useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
+import { endSession } from '../api';
 import { getSession, signOut } from '../auth';
 import { sessionKey } from '../session';
 import { UploadsProvider } from '../uploads';
@@ -22,6 +23,8 @@ export function Layout() {
       setBusy(false);
       return;
     }
+    // At once, not when the page unmounts: the route change waits for the session check of /login.
+    endSession();
     qc.clear();
     await navigate({ to: '/login' });
   }

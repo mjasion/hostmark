@@ -8,8 +8,8 @@ import { createS3Storage } from '@hostmark/storage-s3';
 import { createTelemetry, type Telemetry } from '@hostmark/telemetry';
 import { type NodeTelemetry, startNodeTelemetry } from '@hostmark/telemetry/node';
 import type { Env } from './env';
-import type { NodePlatform } from './platform';
-import { type BullQueueHandle, createBullQueue } from './queue';
+import type { NodePlatform, RuntimeEnv, RuntimeQueue } from './platform';
+import { createBullQueue } from './queue';
 
 export type Service = 'api' | 'worker' | 'scheduler';
 
@@ -18,7 +18,7 @@ export const systemClock: Clock = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
-export function createStorage(env: Env) {
+export function createStorage(env: RuntimeEnv) {
   return createS3Storage({
     endpoint: env.S3_ENDPOINT,
     publicEndpoint: env.S3_PUBLIC_ENDPOINT,
@@ -26,20 +26,39 @@ export function createStorage(env: Env) {
     region: env.S3_REGION,
     accessKeyId: env.S3_ACCESS_KEY_ID,
     secretAccessKey: env.S3_SECRET_ACCESS_KEY,
+    virtualHost: env.S3_VIRTUAL_HOST === 'true',
   });
 }
 
-export interface Runtime {
+export interface Runtime<E extends RuntimeEnv = Env, Q extends RuntimeQueue = RuntimeQueue> {
+  env: E;
   deps: CoreDeps;
-  queue: BullQueueHandle;
+  queue: Q;
   sdk: NodeTelemetry;
   telemetry: Telemetry;
   /** Flushes telemetry and closes connections. Idempotent callers should guard against double calls. */
   shutdown(): Promise<void>;
 }
 
-/** Telemetry first: instrumentation must exist before the first span, log or metric is created. */
-export function createRuntime(service: Service, env: Env, platform: NodePlatform): Runtime {
+/**
+ * Telemetry first: instrumentation must exist before the first span, log or metric is created. The queue comes from
+ * the platform's factory, or is BullMQ on `REDIS_URL` when the platform has none (D185).
+ */
+export function createRuntime(service: Service, env: Env, platform: NodePlatform): Runtime;
+export function createRuntime<E extends RuntimeEnv, Q extends RuntimeQueue>(
+  service: Service,
+  env: E,
+  platform: NodePlatform<E, Q> & { queue: NonNullable<NodePlatform<E, Q>['queue']> },
+): Runtime<E, Q>;
+export function createRuntime(
+  service: Service,
+  env: RuntimeEnv,
+  // The overloads tie the factories to the adapter's environment type; here it is only passed through.
+  platform: Pick<NodePlatform, 'key'> & {
+    queue?: (env: never, logger: Telemetry['logger']) => RuntimeQueue;
+    purger?: (env: never) => CoreDeps['purger'];
+  },
+): Runtime<RuntimeEnv, RuntimeQueue> {
   // Only the api handles sessions. It refuses to start without a real secret rather than run with a default (D88).
   if (service === 'api' && (!env.BETTER_AUTH_SECRET || !env.PUBLIC_URL)) {
     console.error(
@@ -58,7 +77,9 @@ export function createRuntime(service: Service, env: Env, platform: NodePlatform
   });
   const telemetry = createTelemetry(service, { write: sdk.write });
   const nodeDb = createNodeDb(env.DATABASE_URL);
-  const queue = createBullQueue(env.REDIS_URL, undefined, telemetry.logger);
+  const queue = platform.queue
+    ? platform.queue(env as never, telemetry.logger)
+    : createBullQueue((env as Env).REDIS_URL, undefined, telemetry.logger);
   const rum = {
     ...(env.HOSTMARK_TOPOLOGY ? { topology: env.HOSTMARK_TOPOLOGY } : {}),
     ...(env.HOSTMARK_REGION ? { region: env.HOSTMARK_REGION } : {}),
@@ -84,6 +105,7 @@ export function createRuntime(service: Service, env: Env, platform: NodePlatform
     images: createWasmImageProcessor(nodeLoader),
     clock: systemClock,
     telemetry,
+    purger: platform.purger?.(env as never),
     config: {
       platform: platform.key,
       version: env.APP_VERSION,
@@ -92,6 +114,7 @@ export function createRuntime(service: Service, env: Env, platform: NodePlatform
     },
   };
   return {
+    env,
     deps,
     queue,
     sdk,

@@ -11,7 +11,8 @@
 //   snapshot    --config wrangler.api.jsonc --config wrangler.consumer.jsonc   (outputs api=<id> consumer=<id>)
 //   restore     --config wrangler.consumer.jsonc --stable <id> --config wrangler.api.jsonc --stable <id>
 //   rollout     --config wrangler.api.jsonc --sha S --url U [--verify S1,S2]   (http probe + verification)
-//   rollout     --config wrangler.consumer.jsonc --sha S --no-probe --verify S4  (no HTTP surface: verification only)
+//   rollout     --config wrangler.consumer.jsonc --sha S --no-probe --verify S4 --upload-fixture jpeg-tiny.jpg
+//               (no HTTP surface: verification only; S4 with an image this variant accepts, D250)
 import { spawn } from 'node:child_process';
 import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -112,6 +113,48 @@ function setOutput(env, name, value) {
 export const generatedConfigName = (config, pr) => config.replace(/\.jsonc$/, `.pr-${pr}.generated.jsonc`);
 
 const PREVIEW_CONFIGS = ['wrangler.api.jsonc', 'wrangler.consumer.jsonc'];
+
+/** Upload fixtures the portable Workers variant processes: everything above 1.5 MP is refused (D103). */
+export const ACCEPTED_FIXTURES = Object.freeze(['jpeg-tiny.jpg']);
+
+/**
+ * Scenarios that cannot pass on this variant whatever the fixture, because they upload images it refuses and take no
+ * fixture override (D103). A verification with one of them would roll back every healthy release.
+ */
+const REFUSED_SCENARIOS = Object.freeze({
+  S5: 'uploads jpeg-1mb.jpg',
+  S9: 'uploads 10 MB and 49 MP images',
+  S12: 'seeds jpeg-1mb.jpg',
+  S13: 'cannot reach ready with its upload',
+  S15: 'seeds jpeg-1mb.jpg',
+});
+
+/**
+ * The scenarios of a verification and the environment of its load run. S4 uploads the 12 MP `jpeg-1mb.jpg` unless
+ * UPLOAD_FIXTURE names another file, so S4 needs `--upload-fixture` with a fixture this variant accepts; the run is
+ * then "reduced" (load/lib/params.js) and is never a benchmark result (D250). Throws on anything else, before any
+ * version is uploaded.
+ */
+export function verificationPlan(verify, uploadFixture) {
+  const scenarios = String(verify ?? '')
+    .split(',')
+    .filter((id) => /^S[0-9]{1,2}$/.test(id));
+  if (scenarios.length === 0) throw new Error('--verify needs scenario ids such as S1,S2');
+  for (const id of scenarios)
+    if (REFUSED_SCENARIOS[id])
+      throw new Error(
+        `${id} ${REFUSED_SCENARIOS[id]}, which this variant refuses (D103); it cannot verify a rollout`,
+      );
+  if (uploadFixture !== undefined && !ACCEPTED_FIXTURES.includes(uploadFixture))
+    throw new Error(`--upload-fixture must be one of ${ACCEPTED_FIXTURES.join(', ')} (D103)`);
+  if (scenarios.includes('S4') && uploadFixture === undefined)
+    throw new Error(
+      `S4 uploads the 12 MP jpeg-1mb.jpg, which this variant refuses (D103): pass --upload-fixture ${ACCEPTED_FIXTURES[0]}`,
+    );
+  if (uploadFixture !== undefined && !scenarios.includes('S4'))
+    throw new Error('--upload-fixture applies to S4 only');
+  return { scenarios, env: uploadFixture === undefined ? {} : { UPLOAD_FIXTURE: uploadFixture } };
+}
 const readBase = (configPath) => parseJsonc(readFileSync(resolve(ADAPTER, configPath), 'utf8'));
 
 export async function main(
@@ -138,6 +181,7 @@ export async function main(
       config: { type: 'string', multiple: true },
       public: { type: 'string', default: 'wrangler.api.jsonc' },
       verify: { type: 'string', default: 'S1,S2' },
+      'upload-fixture': { type: 'string' },
       'no-probe': { type: 'boolean', default: false },
       stable: { type: 'string', multiple: true },
       status: { type: 'string' },
@@ -291,6 +335,8 @@ async function rollout({ env, exec, fetch: fetchImpl, log, values, sleep }) {
   const url = values.url;
   const outDir = mkdtempSync(join(tmpdir(), 'hostmark-rollout-'));
   const outFile = join(outDir, 'wrangler-output.ndjson');
+  // Refuses a verification that this variant can never pass before anything is uploaded (D250).
+  const plan = verificationPlan(values.verify, values['upload-fixture']);
 
   // 1. What serves production now. If that is unclear nothing is uploaded or shifted, because there would be
   //    nothing certain to roll back to.
@@ -353,17 +399,16 @@ async function rollout({ env, exec, fetch: fetchImpl, log, values, sleep }) {
     if (preflight.action === 'rollback') return 1;
   }
 
-  const scenarios = values.verify.split(',').filter((id) => /^S[0-9]{1,2}$/.test(id));
-  if (scenarios.length === 0) throw new Error('--verify needs scenario ids such as S1,S2');
   const verify = async () => {
     const loadEnv = {
+      ...plan.env,
       BASE_URL: url,
       API_KEY: need(env, 'LOAD_API_KEY'),
       REGION: 'cloudflare-global',
       VARIANT: sha,
       LOAD_ACK_REMOTE: new URL(url).host,
     };
-    const result = await exec(['node', 'load/run.mjs', ...scenarios, '--short'], { env: loadEnv });
+    const result = await exec(['node', 'load/run.mjs', ...plan.scenarios, '--short'], { env: loadEnv });
     return { ok: result.code === 0, detail: `load run exited ${result.code}` };
   };
 

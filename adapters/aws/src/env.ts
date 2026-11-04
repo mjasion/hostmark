@@ -37,6 +37,16 @@ export const varsSchema = z.object({
   CLOUDFRONT_DISTRIBUTION_ID: z.string().min(1).optional(),
   /** Shared with the distribution's origin custom header; the api refuses any request that lacks it (D80). */
   ORIGIN_SECRET: z.string().min(32, 'must be at least 32 characters').optional(),
+  /**
+   * OTLP/HTTP base URL of the OTel backend (acceptance criterion 3). Empty or absent: nothing is exported and logs are
+   * JSON lines on stdout (CloudWatch Logs) only.
+   */
+  OTLP_ENDPOINT: z.union([z.literal(''), httpUrl]).default(''),
+  /**
+   * Read by the OTLP exporters themselves (the OpenTelemetry convention: `key=value` pairs, comma separated, values
+   * URL-encoded, for example `authorization=Basic%20...`). Listed here so that the template may set it.
+   */
+  OTEL_EXPORTER_OTLP_HEADERS: z.string().optional(),
   /** Multiplies the retry delays. Only the chaos tests set it below 1: the real schedule takes 400 s. */
   QUEUE_BACKOFF_SCALE: z.coerce.number().min(0).default(1),
 });

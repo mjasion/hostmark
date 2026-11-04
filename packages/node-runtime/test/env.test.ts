@@ -62,3 +62,13 @@ describe('auth environment', () => {
     expect(r.success && r.data.AUTH_CLIENT_IP_HEADER).toBeUndefined();
   });
 });
+
+describe('S3 addressing', () => {
+  it('is path-style unless S3_VIRTUAL_HOST is true (D280)', () => {
+    const def = parse({});
+    expect(def.success && def.data.S3_VIRTUAL_HOST).toBe('false');
+    const on = parse({ S3_VIRTUAL_HOST: 'true' });
+    expect(on.success && on.data.S3_VIRTUAL_HOST).toBe('true');
+    expect(parse({ S3_VIRTUAL_HOST: 'yes' }).success).toBe(false);
+  });
+});

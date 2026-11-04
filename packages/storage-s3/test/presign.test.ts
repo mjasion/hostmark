@@ -1,5 +1,6 @@
+import { AwsV4Signer } from 'aws4fetch';
 import { describe, expect, it } from 'vitest';
-import { createS3Storage } from '../src/index';
+import { bucketUrl, createS3Storage } from '../src/index';
 
 const base = {
   endpoint: 'http://minio:9000',
@@ -38,6 +39,100 @@ describe('presign (offline)', () => {
     const s = createS3Storage(base);
     await expect(s.presignGet('a/../b', 60)).rejects.toThrow('Invalid object key');
     await expect(s.presignGet('', 60)).rejects.toThrow('Invalid object key');
+  });
+});
+
+describe('virtual-hosted-style URLs (Tigris)', () => {
+  const tigris = {
+    ...base,
+    endpoint: 'https://fly.storage.tigris.dev',
+    bucket: 'hostmark-bucket',
+    region: 'auto',
+    virtualHost: true,
+  };
+
+  /** Signs `url` again at the presigned URL's own time; equal signatures mean the same host and path were signed. */
+  async function resign(
+    presigned: URL,
+    url: string,
+    headers?: Record<string, string>,
+  ): Promise<string | null> {
+    const unsigned = new URL(url);
+    for (const [k, v] of presigned.searchParams) if (k === 'X-Amz-Expires') unsigned.searchParams.set(k, v);
+    const signer = new AwsV4Signer({
+      method: headers ? 'PUT' : 'GET',
+      url: unsigned.toString(),
+      headers,
+      accessKeyId: 'AK',
+      secretAccessKey: 'SK',
+      service: 's3',
+      region: 'auto',
+      signQuery: true,
+      allHeaders: headers !== undefined,
+      datetime: presigned.searchParams.get('X-Amz-Date') ?? '',
+    });
+    return (await signer.sign()).url.searchParams.get('X-Amz-Signature');
+  }
+
+  it('puts the bucket in the host, for presigned GET and PUT', async () => {
+    const s = createS3Storage(tigris);
+    const get = new URL(await s.presignGet('variants/f/512.webp', 60));
+    expect(get.origin).toBe('https://hostmark-bucket.fly.storage.tigris.dev');
+    expect(get.pathname).toBe('/variants/f/512.webp');
+    const put = new URL(await s.presignPut('originals/u/f', 'image/png', 1234, 600));
+    expect(put.host).toBe('hostmark-bucket.fly.storage.tigris.dev');
+    expect(put.pathname).toBe('/originals/u/f');
+    expect(put.searchParams.get('X-Amz-SignedHeaders')).toBe('content-length;content-type;host');
+  });
+
+  it('signs the virtual host, not the endpoint host', async () => {
+    const s = createS3Storage(tigris);
+    const get = new URL(await s.presignGet('k/a b', 60));
+    const signature = get.searchParams.get('X-Amz-Signature');
+    expect(signature).toMatch(/^[0-9a-f]{64}$/);
+    expect(await resign(get, 'https://hostmark-bucket.fly.storage.tigris.dev/k/a%20b')).toBe(signature);
+    expect(await resign(get, 'https://fly.storage.tigris.dev/hostmark-bucket/k/a%20b')).not.toBe(signature);
+    const put = new URL(await s.presignPut('k', 'image/png', 7, 60));
+    const headers = { 'content-type': 'image/png', 'content-length': '7' };
+    expect(await resign(put, 'https://hostmark-bucket.fly.storage.tigris.dev/k', headers)).toBe(
+      put.searchParams.get('X-Amz-Signature'),
+    );
+  });
+
+  it('uses the virtual host for server calls too', async () => {
+    const seen: Request[] = [];
+    const s = createS3Storage({
+      ...tigris,
+      // aws4fetch hands over a signed Request.
+      fetch: async (input) => {
+        seen.push(input as Request);
+        return new Response(null, { status: 404 });
+      },
+    });
+    expect(await s.head('originals/u/f')).toBeNull();
+    await s.delete(['variants/x']);
+    expect(seen.map((r) => r.url)).toEqual([
+      'https://hostmark-bucket.fly.storage.tigris.dev/originals/u/f',
+      'https://hostmark-bucket.fly.storage.tigris.dev/variants/x',
+    ]);
+    expect(seen[0]?.headers.get('authorization')).toMatch(/SignedHeaders=[^,]*host/);
+  });
+
+  it('applies to the public endpoint as well', async () => {
+    const s = createS3Storage({ ...tigris, publicEndpoint: 'https://t3.storage.dev/' });
+    expect(new URL(await s.presignGet('k', 60)).origin).toBe('https://hostmark-bucket.t3.storage.dev');
+  });
+
+  it('keeps path-style as the default (MinIO)', () => {
+    expect(bucketUrl('http://minio:9000/', 'b')).toBe('http://minio:9000/b');
+    expect(bucketUrl('http://minio:9000', 'b', false)).toBe('http://minio:9000/b');
+    expect(bucketUrl('https://h.example/base/', 'my-bucket', true)).toBe('https://my-bucket.h.example/base');
+  });
+
+  it('refuses a bucket name that is not one DNS label', () => {
+    for (const bucket of ['my.bucket', 'Upper', 'a', `x${'y'.repeat(63)}`, '-lead'])
+      expect(() => createS3Storage({ ...tigris, bucket }), bucket).toThrow(/virtual-hosted/);
+    expect(() => createS3Storage({ ...base, bucket: 'my.bucket' })).not.toThrow();
   });
 });
 

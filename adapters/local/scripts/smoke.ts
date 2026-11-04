@@ -20,6 +20,7 @@ import webpDecode, { init as initWebpDecoder } from '@jsquash/webp/decode.js';
 import { Queue } from 'bullmq';
 import postgres from 'postgres';
 import { makeJpeg } from '../test/fixtures';
+import { IMAGE, readStaleInput, staleProblems } from './stale-image';
 
 const stackDir = fileURLToPath(new URL('..', import.meta.url));
 
@@ -210,6 +211,16 @@ async function step(name: string, fn: () => Promise<string | undefined>): Promis
 let readyFileId = '';
 let completeTraceId = '';
 const userId = 'seed-user';
+
+// Before anything recreates a container: the running api, worker and scheduler must use the current image, and the
+// image must be newer than every source file that goes into it (D203). SMOKE_ALLOW_STALE=1 reports and goes on.
+await step('the running stack is built from the current tree', async () => {
+  const problems = staleProblems(readStaleInput(stackDir));
+  if (problems.length === 0) return `${IMAGE} is current`;
+  const message = `${problems.join('; ')}. Rebuild: docker compose build && docker compose up -d`;
+  if (process.env.SMOKE_ALLOW_STALE === '1') return `ignored (SMOKE_ALLOW_STALE=1): ${message}`;
+  throw new Error(message);
+});
 
 compose(['up', '-d', '--no-build', '--no-deps', ...ONE_WORKER, 'worker']);
 

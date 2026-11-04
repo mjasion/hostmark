@@ -2,7 +2,7 @@ import type { FileResponse, FileStatusEvent } from '@hostmark/contract';
 import { FILE_STATUSES, SSE_FALLBACK_POLL_MS, TERMINAL_STATUSES } from '@hostmark/contract/constants';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { client } from './api';
+import { client, trackStream } from './api';
 
 /** If the stream sends no headers within this time (a buffering proxy, for example), poll instead. */
 export const SSE_OPEN_TIMEOUT_MS = 10_000;
@@ -38,6 +38,8 @@ export function useLiveFile(id: string) {
   useEffect(() => {
     if (!loaded || terminal || mode !== 'sse') return;
     const es = new EventSource(client.eventsUrl(id), { withCredentials: true });
+    // Closed by the end of the session too, which may come before this page unmounts (D302).
+    const untrack = trackStream(es);
     let errors = 0;
     const fallback = () => {
       clearTimeout(openTimer);
@@ -72,6 +74,7 @@ export function useLiveFile(id: string) {
     return () => {
       clearTimeout(openTimer);
       es.close();
+      untrack();
     };
   }, [id, loaded, terminal, mode, qc]);
 

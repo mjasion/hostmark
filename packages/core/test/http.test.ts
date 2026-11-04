@@ -73,6 +73,32 @@ describe.skipIf(!databaseUrl)('http', () => {
       expect(res.headers.get('x-platform')).toBe('test-portable');
     });
 
+    it('marks the generic 404 no-store on every path outside /api, so no CDN keeps it (D303)', async () => {
+      for (const path of ['/nope', '/assets/app-gone.js', '/robots.txt', '/some/deep/path?x=1']) {
+        for (const method of ['GET', 'HEAD', 'POST']) {
+          const res = await h.request(path, { method });
+          expect(res.status, `${method} ${path}`).toBe(404);
+          expect(res.headers.get('cache-control'), `${method} ${path}`).toBe('no-store');
+        }
+      }
+      // /api keeps its own policy, which is no-store as well.
+      expect((await h.request('/api/nope')).headers.get('cache-control')).toBe('private, no-store');
+    });
+
+    it('marks the error of a failed dependency resolution no-store on any path (D303)', async () => {
+      const app = createApp(() => {
+        throw new Error('config missing');
+      });
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const res = await app.request('/nope');
+        expect(res.status).toBe(500);
+        expect(res.headers.get('cache-control')).toBe('no-store');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('does not leak internals on an unexpected 500 and keeps the headers', async () => {
       const db = new Proxy(h.deps.db, {
         get(target, prop, receiver) {
@@ -560,7 +586,7 @@ describe.skipIf(!databaseUrl)('http', () => {
     const events = (text: string) =>
       text
         .split('\n\n')
-        .filter(Boolean)
+        .filter((block) => block && !block.startsWith(':'))
         .map((block) => {
           const lines = Object.fromEntries(
             block.split('\n').map((l) => [l.slice(0, l.indexOf(':')), l.slice(l.indexOf(':') + 1).trim()]),
@@ -591,9 +617,12 @@ describe.skipIf(!databaseUrl)('http', () => {
         h.clock.advance(ms);
       };
       const res = await h.request(`/api/files/${id}/events`, { key: KEYS.alice });
-      const got = events(await res.text());
+      const text = await res.text();
+      const got = events(text);
       expect(got).toHaveLength(1);
       expect(polls).toBe(60);
+      // D236: a quiet stream sends a comment every 15 s (at 15, 30 and 45 s), never at the deadline.
+      expect(text.match(/^: keepalive$/gm)).toHaveLength(3);
     });
 
     it('stops polling when the client disconnects', async () => {
@@ -750,14 +779,23 @@ describe.skipIf(!databaseUrl)('http', () => {
       return id;
     }
 
-    it('serves a public ready variant with immutable cache headers', async () => {
+    it('serves a public ready variant with immutable cache headers, one minute in shared caches without a purger', async () => {
       const id = await readyFile(true);
       const res = await h.request(`/media/${id}/512.webp`);
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toBe('image/webp');
-      expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+      expect(h.deps.purger).toBeUndefined();
+      expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, s-maxage=60, immutable');
       expect(res.headers.get('x-trace-id')).toBeTruthy();
       expect(new TextDecoder().decode(await res.arrayBuffer())).toBe('webp:512:fake:800x600');
+    });
+
+    it('lets shared caches keep a variant for a year when a purger can empty them (D100, D205)', async () => {
+      h.deps.purger = { purge: async () => {} };
+      const id = await readyFile(true);
+      const res = await h.request(`/media/${id}/512.webp`);
+      expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+      h.deps.purger = undefined;
     });
 
     it('is 404 for private, not ready, deleted files and unknown sizes', async () => {

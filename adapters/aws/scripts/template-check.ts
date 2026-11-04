@@ -4,11 +4,34 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
-import { BACKOFF_SECONDS, MAX_ATTEMPTS, SCHEDULER_JOBS } from '@hostmark/contract';
+import { BACKOFF_SECONDS, MAX_ATTEMPTS, SCHEDULER_JOBS, SSE_MAX_DURATION_MS } from '@hostmark/contract';
 import { type CollectionTag, parse, type ScalarTag } from 'yaml';
 import { varsSchema } from '../src/env';
 
 export const templatePath = fileURLToPath(new URL('../template.yaml', import.meta.url));
+const coreAppPath = fileURLToPath(new URL('../../../packages/core/src/http/app.ts', import.meta.url));
+
+/** The key `/api/health/deep` sends HEAD for. Read from the core source, which does not export it. */
+export function healthProbeKey(source = readFileSync(coreAppPath, 'utf8')): string {
+  const keys = [...source.matchAll(/storage\.head\('([^']+)'\)/g)].map((m) => m[1] as string);
+  if (keys.length !== 1) throw new Error(`expected one storage.head('<key>') in core, found ${keys.length}`);
+  return keys[0] as string;
+}
+
+/** Minimum worker memory in MB: D79 measured 3.0 to 3.2 GiB per process, and the other platforms give 4 GiB. */
+export const WORKER_MEMORY_FLOOR_MB = 4096;
+
+/** CloudFront's origin response timeout without a quota increase: 1 to 120 s. */
+export const ORIGIN_READ_TIMEOUT_MAX_S = 120;
+
+/**
+ * A contract cron expression (`min hour * * *`, D19) in EventBridge Scheduler's form: six fields, `?` for the day of
+ * the week, and an increment written with its start (`0/15`) as in the Scheduler documentation, not with an asterisk.
+ */
+export function schedulerCron(contractCron: string): string {
+  const [min, hour] = contractCron.split(' ').map((f) => f.replace(/^\*\//, '0/'));
+  return `cron(${min} ${hour} * * ? *)`;
+}
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Node = { [key: string]: Json };
@@ -90,8 +113,8 @@ export function checkTemplate(template = loadTemplate()): string[] {
       if (!resources[dep]) problems.push(`${name} depends on unknown "${dep}" ${needs}`);
   }
 
-  // Secrets stay out of the template: the three parameters that carry them are NoEcho.
-  for (const p of ['DatabaseUrl', 'BetterAuthSecret', 'OriginSecret'])
+  // Secrets stay out of the template: the parameters that carry them are NoEcho.
+  for (const p of ['DatabaseUrl', 'BetterAuthSecret', 'OriginSecret', 'OtlpHeaders'])
     if ((params[p] as Node | undefined)?.NoEcho !== true) problems.push(`Parameter ${p} must be NoEcho`);
 
   // Contract constants.
@@ -111,12 +134,48 @@ export function checkTemplate(template = loadTemplate()): string[] {
   if (BACKOFF_SECONDS.length + 1 !== MAX_ATTEMPTS)
     problems.push('BACKOFF_SECONDS no longer matches MAX_ATTEMPTS');
 
+  // D79: the worker memory parameter cannot go below the measured peak plus the margin of the other platforms.
+  const memory = params.WorkerMemory as Node | undefined;
+  if (JSON.stringify(props('WorkerFunction').MemorySize) !== JSON.stringify({ Ref: 'WorkerMemory' }))
+    problems.push('WorkerFunction MemorySize must be the WorkerMemory parameter');
+  for (const key of ['Default', 'MinValue'])
+    if (!(Number(memory?.[key]) >= WORKER_MEMORY_FLOOR_MB))
+      problems.push(`WorkerMemory ${key} must be at least ${WORKER_MEMORY_FLOOR_MB} MB (D79)`);
+
+  // /api/health/deep: the api role must be able to read the probe key, or the check answers 503 for ever.
+  const probeResource = `\${Bucket.Arn}/${healthProbeKey()}`;
+  const statementsOf = (role: string) =>
+    ((props(role).Policies ?? []) as Node[]).flatMap(
+      (p) => ((p.PolicyDocument as Node | undefined)?.Statement ?? []) as Node[],
+    );
+  const apiStatements = statementsOf('ApiRole');
+  const readsProbe = apiStatements.some(
+    (s) =>
+      s.Effect === 'Allow' &&
+      [s.Action].flat().includes('s3:GetObject') &&
+      [s.Resource].flat().some((r) => JSON.stringify(r) === JSON.stringify({ 'Fn::Sub': probeResource })),
+  );
+  if (!readsProbe) problems.push(`ApiRole must allow s3:GetObject on ${probeResource}`);
+
+  // Without s3:ListBucket a missing key answers 403, not 404: `complete` before the PUT would be 500, not 409. The
+  // grant is on the bucket and unconditioned (an s3:prefix condition is evaluated on list requests only).
+  for (const role of ['ApiRole', 'WorkerRole']) {
+    const lists = statementsOf(role).some(
+      (s) =>
+        s.Effect === 'Allow' &&
+        [s.Action].flat().includes('s3:ListBucket') &&
+        JSON.stringify(s.Resource) === JSON.stringify({ 'Fn::GetAtt': ['Bucket', 'Arn'] }) &&
+        s.Condition === undefined,
+    );
+    if (!lists) problems.push(`${role} must allow s3:ListBucket on the bucket, without a condition`);
+  }
+
   // D74: originals/ and variants/ expire after 8 days.
   const rules = ((props('Bucket').LifecycleConfiguration as Node | undefined)?.Rules ??
     []) as unknown as Node[];
   for (const prefix of ['originals/', 'variants/']) {
     const rule = rules.find((r) => r.Prefix === prefix);
-    if (!rule || rule.Status !== 'Enabled' || rule.ExpirationInDays !== 8)
+    if (rule?.Status !== 'Enabled' || rule.ExpirationInDays !== 8)
       problems.push(`No enabled 8 day lifecycle rule for ${prefix} (D74)`);
   }
 
@@ -126,8 +185,7 @@ export function checkTemplate(template = loadTemplate()): string[] {
     const s = schedules.find(
       (r) => ((r.Properties as Node).Target as Node).Input === JSON.stringify({ job }),
     );
-    const [min, hour] = cron.split(' ');
-    const expected = `cron(${min} ${hour} * * ? *)`;
+    const expected = schedulerCron(cron);
     if (!s) problems.push(`No schedule for ${job}`);
     else if ((s.Properties as Node).ScheduleExpression !== expected)
       problems.push(
@@ -136,6 +194,51 @@ export function checkTemplate(template = loadTemplate()): string[] {
   }
   if (schedules.length !== Object.keys(SCHEDULER_JOBS).length)
     problems.push('Unexpected number of schedules');
+  for (const s of schedules)
+    if (
+      ((s.Properties as Node).Target as Node).RetryPolicy === undefined ||
+      (((s.Properties as Node).Target as Node).RetryPolicy as Node).MaximumRetryAttempts !== 0
+    )
+      problems.push('Every schedule needs RetryPolicy.MaximumRetryAttempts 0 (one run per tick, D19)');
+  // The Scheduler invokes asynchronously and Lambda retries a failed asynchronous invocation twice by default.
+  const invokeConfig = Object.values(resources).find(
+    (r) =>
+      r.Type === 'AWS::Lambda::EventInvokeConfig' &&
+      JSON.stringify((r.Properties as Node).FunctionName) === JSON.stringify({ Ref: 'SchedulerFunction' }),
+  );
+  const invoke = invokeConfig?.Properties as Node | undefined;
+  if (
+    invoke?.MaximumRetryAttempts !== 0 ||
+    invoke.MaximumEventAgeInSeconds !== 60 ||
+    invoke.Qualifier !== '$LATEST'
+  )
+    problems.push(
+      'SchedulerFunction needs an EventInvokeConfig on $LATEST with MaximumRetryAttempts 0 and MaximumEventAgeInSeconds 60',
+    );
+
+  // F1, "alert DLQ > 0": an alarm on the visible messages of the dead letter queue.
+  const dlqAlarm = Object.values(resources).find((r) => {
+    if (r.Type !== 'AWS::CloudWatch::Alarm') return false;
+    const a = r.Properties as Node;
+    return (
+      a.Namespace === 'AWS/SQS' &&
+      a.MetricName === 'ApproximateNumberOfMessagesVisible' &&
+      JSON.stringify(a.Dimensions).includes(
+        JSON.stringify({ 'Fn::GetAtt': ['DeadLetterQueue', 'QueueName'] }),
+      ) &&
+      a.Threshold === 0 &&
+      a.ComparisonOperator === 'GreaterThanThreshold'
+    );
+  });
+  if (!dlqAlarm)
+    problems.push('No alarm on ApproximateNumberOfMessagesVisible > 0 of the DeadLetterQueue (F1)');
+
+  // The api holds one database connection per environment: its concurrency is capped by a parameter.
+  if (
+    JSON.stringify(props('ApiFunction').ReservedConcurrentExecutions) !==
+    JSON.stringify({ Ref: 'ApiReservedConcurrency' })
+  )
+    problems.push('ApiFunction ReservedConcurrentExecutions must be the ApiReservedConcurrency parameter');
 
   // Environment variables: every name is known to the app, and each function gets what its service requires.
   const names = new Set(Object.keys(varsSchema.shape));
@@ -180,7 +283,8 @@ export function checkTemplate(template = loadTemplate()): string[] {
   ] as const) {
     const vars = Object.keys(((props(fn).Environment as Node | undefined)?.Variables ?? {}) as Node);
     for (const v of vars) if (!names.has(v)) problems.push(`${service}: ${v} is not a variable of the app`);
-    for (const v of required) if (!vars.includes(v)) problems.push(`${service}: ${v} is missing`);
+    for (const v of [...required, 'OTLP_ENDPOINT', 'OTEL_EXPORTER_OTLP_HEADERS'])
+      if (!vars.includes(v)) problems.push(`${service}: ${v} is missing`);
     if (props(fn).Runtime !== 'nodejs22.x') problems.push(`${fn}: runtime must be nodejs22.x`);
   }
 
@@ -191,9 +295,26 @@ export function checkTemplate(template = loadTemplate()): string[] {
   for (const p of ['/api/*', '/media/*', '/f/*'])
     if (!patterns.includes(p)) problems.push(`No behavior for ${p}`);
   const apiBehavior = ssz.find((b) => b.PathPattern === '/api/*');
-  if (!JSON.stringify(apiBehavior?.FunctionAssociations).includes('ClientIpFunction'))
-    problems.push('/api/* must run the client address function (D80)');
+  if (!JSON.stringify(apiBehavior?.FunctionAssociations).includes('ApiViewerFunction'))
+    problems.push('/api/* must run the viewer function (client address D80, forwarded host D51)');
   if (apiBehavior?.Compress !== false) problems.push('/api/* must not compress (it would buffer SSE)');
+
+  // CloudFront waits at most OriginReadTimeout between two packets of the api: longer than the SSE cap, within the
+  // range that needs no quota increase.
+  const config = props('Distribution').DistributionConfig as Node;
+  const apiOrigin = (config.Origins as unknown as Node[]).find((o) => o.Id === 'api');
+  const readTimeout = (apiOrigin?.CustomOriginConfig as Node | undefined)?.OriginReadTimeout as number;
+  if (!(readTimeout > SSE_MAX_DURATION_MS / 1000 && readTimeout <= ORIGIN_READ_TIMEOUT_MAX_S))
+    problems.push(
+      `The api origin's OriginReadTimeout must be above ${SSE_MAX_DURATION_MS / 1000} s (SSE) and at most ${ORIGIN_READ_TIMEOUT_MAX_S} s`,
+    );
+  // A custom domain needs both the aliases and the certificate; without one, the distribution keeps its own.
+  for (const key of ['Aliases', 'ViewerCertificate'])
+    if (((config[key] as Node | undefined)?.['Fn::If'] as Json[] | undefined)?.[0] !== 'HasCustomDomain')
+      problems.push(`Distribution ${key} must depend on the HasCustomDomain condition`);
+  // CustomErrorResponses apply to every behavior and would rewrite the api's own statuses.
+  if (config.CustomErrorResponses !== undefined)
+    problems.push('No CustomErrorResponses: they would also rewrite the api responses');
   return problems;
 }
 
@@ -204,7 +325,7 @@ export interface FunctionResult {
 
 /** Runs the inline CloudFront Function code of a resource the way CloudFront would, on a viewer request. */
 export function runCloudFrontFunction(
-  resource: 'SiteFunction' | 'ClientIpFunction',
+  resource: 'SiteFunction' | 'ApiViewerFunction',
   request: { uri: string; headers?: Record<string, { value: string }> },
   viewerIp = '203.0.113.9',
   template = loadTemplate(),

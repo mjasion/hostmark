@@ -5,7 +5,8 @@ import type { CoreDeps } from '@hostmark/core';
 import type { CachePurger, Clock, ImageProcessor } from '@hostmark/core/ports';
 import { databaseFromPostgresJs } from '@hostmark/db/postgres-js';
 import { createS3Storage } from '@hostmark/storage-s3';
-import { createTelemetry } from '@hostmark/telemetry';
+import { createTelemetry, type Telemetry } from '@hostmark/telemetry';
+import { startNodeTelemetry } from '@hostmark/telemetry/node';
 import postgres from 'postgres';
 import { CLIENT_IP_HEADER, parseVars, type Vars } from './env';
 import { createCloudFrontPurger } from './purge';
@@ -41,30 +42,93 @@ export interface Runtime {
   vars: Vars;
   sqs: SQSClient;
   queueUrl: string;
+  /**
+   * Exports the buffered spans, metrics and logs; resolves after at most `FLUSH_TIMEOUT_MS` and never throws. Each
+   * entrypoint awaits it before the invocation returns, because Lambda freezes the environment then and the batch
+   * timers of the SDK do not run while it is frozen.
+   */
+  flush(): Promise<void>;
   close(): Promise<void>;
 }
 
-const telemetry = new Map<Service, ReturnType<typeof createTelemetry>>();
-function telemetryFor(service: Service) {
+/** Upper bound of the flush at the end of an invocation: an unreachable collector must not hold the function. */
+export const FLUSH_TIMEOUT_MS = 2_000;
+
+interface ServiceTelemetry {
+  telemetry: Telemetry;
+  forceFlush(): Promise<void>;
+}
+
+const telemetry = new Map<Service, ServiceTelemetry>();
+/**
+ * One per service and process. With `OTLP_ENDPOINT` the Node SDK exports over OTLP/HTTP with `service.name` = the
+ * service (api, worker, scheduler); the exporters read `OTEL_EXPORTER_OTLP_HEADERS` themselves. Without it spans and
+ * metrics are no-ops and logs are JSON lines on stdout (CloudWatch Logs). The SDK registers global providers, so only
+ * the first service of a process exports: a Lambda environment runs one function, only tests create several.
+ */
+function telemetryFor(service: Service, vars: Vars): ServiceTelemetry {
   let t = telemetry.get(service);
   if (!t) {
-    // No collector next to a Lambda: spans and metrics are no-ops, logs are JSON lines on stdout (CloudWatch Logs).
-    t = createTelemetry(service);
+    if (vars.OTLP_ENDPOINT) {
+      const sdk = startNodeTelemetry({
+        service,
+        platform: PLATFORM,
+        variant: 'portable',
+        imageImpl: 'wasm',
+        version: vars.APP_VERSION,
+        environment: vars.ENVIRONMENT,
+        otlpEndpoint: vars.OTLP_ENDPOINT,
+      });
+      t = { telemetry: createTelemetry(service, { write: sdk.write }), forceFlush: () => sdk.flush() };
+    } else {
+      t = { telemetry: createTelemetry(service), forceFlush: async () => {} };
+    }
     telemetry.set(service, t);
   }
   return t;
 }
 
+/** `forceFlush` bounded by `timeoutMs`; a failure or a timeout is logged, never thrown. */
+export async function boundedFlush(
+  forceFlush: () => Promise<void>,
+  logger: Telemetry['logger'],
+  timeoutMs = FLUSH_TIMEOUT_MS,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+  });
+  try {
+    const result = await Promise.race([forceFlush().then(() => 'done' as const), timeout]);
+    if (result === 'timeout') logger.warn('telemetry flush timed out', { timeoutMs });
+  } catch (err) {
+    logger.warn('telemetry flush failed', { error: err instanceof Error ? err.message : String(err) });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Runs one invocation and flushes the telemetry after it, whether it returned or threw. */
+export async function withFlush<T>(runtime: () => Runtime | undefined, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } finally {
+    await runtime()?.flush();
+  }
+}
+
 /**
  * One runtime per execution environment (a warm container serves many invocations, one at a time), so the database
  * connection and the SDK clients are reused. `max: 1` because Lambda handles one request per environment; the
- * connection count is therefore the concurrency of the function, which the template caps (README, "Database").
+ * connection count is therefore the concurrency of the function, which the template caps: `ApiReservedConcurrency`
+ * for the api, `WorkerMaxConcurrency` for the worker (README, "Database").
  */
 export function createRuntime(source: Record<string, unknown>, options: RuntimeOptions): Runtime {
   const vars = parseVars(source, options.service);
   const client = postgres(vars.DATABASE_URL, { max: 1, idle_timeout: 20, onnotice: () => {} });
   const db = databaseFromPostgresJs(client);
-  const t = telemetryFor(options.service);
+  const st = telemetryFor(options.service, vars);
+  const t = st.telemetry;
   const origin = new URL(vars.PUBLIC_URL).origin;
 
   const credentials = {
@@ -133,6 +197,7 @@ export function createRuntime(source: Record<string, unknown>, options: RuntimeO
     vars,
     sqs,
     queueUrl: vars.SQS_QUEUE_URL,
+    flush: () => boundedFlush(st.forceFlush, t.logger),
     close: async () => {
       await client.end({ timeout: 5 });
       sqs.destroy();

@@ -206,22 +206,23 @@ and delete, and the 403 without the origin secret. Stays `emulated`. Not done, n
 `cfn-lint` or `validate-template`, the Lambda event source mapping, function URL streaming through CloudFront, the
 viewer-request client address function, invalidation timing, memory of a 50 MP image on Lambda.
 
-Status of `adapters/vercel` (D197 to D199): done offline, thinner than `adapters/aws`. Functions (`api/index.ts` Hono,
-`api/queue.ts` consumer, `api/cron.ts`), Vercel Queues with an own dead letter topic, Cron Jobs, R2 for files, tag
-based purge, `vercel.json` validated by `pnpm check` against a subset of the published schema (the `vercel` CLI is not
-installed and was not run). The core queue contract passes on an in-memory model of Vercel Queues, which proves the
-adapter logic only. Stays `emulated`. Not done, needs an account: any deployment, the real queue (delivery, idempotency
-keys, visibility timeout, `queue/v2beta` trigger), `includeFiles` for the wasm codecs, the rewrites, the purge call
-against a real cache, client address header spoofing, R2 lifecycle, the web build with the platform name `vercel`
-on a real build, and an end to end run on Postgres (the aws adapter has one, vercel does not).
+Status of `adapters/vercel` (D197 to D199, D230 to D234): done offline. Functions bundled by esbuild (`api/index.js`
+Hono, `api/queue.js` consumer, `api/cron.js`, D230), Vercel Queues with an own dead letter topic and `maxDeliveries`,
+Cron Jobs, R2 for files, tag based purge, `vercel.json` validated by `pnpm check` against a subset of the published
+schema (the `vercel` CLI is not installed and was not run). The core queue contract passes on an in-memory model of
+Vercel Queues, which proves the adapter logic only; the bundles load under plain Node, the rewrites are pinned with
+the routing library's matcher, and an end to end run on Postgres and MinIO covers the purge and cache headers. Stays
+`emulated`. Not done, needs an account: any deployment, `vercel build` itself and its tracing of `dist/`, the real
+queue (delivery, idempotency keys, visibility timeout, `maxDeliveries`, `queue/v2beta` trigger), the purge call and a
+request context in queue and cron invocations, client address header spoofing, R2 lifecycle.
 
 Status of `adapters/gcp` (D180 to D189): done offline. Cloud Run services for the api and the worker (instance-based
 billing, fixed count), Cloud Scheduler calling Cloud Run Jobs, Pub/Sub with a dead letter topic (own unary pull
 consumer, D17 rules), Cloud Storage over the XML API, a global load balancer with Cloud CDN, the `X-Client-Ip` custom
 header (D182), `urlMaps.invalidateCache` for D100, Terraform in `infra/`, `scripts/deploy.sh` (never run) and
 `scripts/check-config.ts`. The queue contract (visibility, backoff, dead letter) passes on the Pub/Sub emulator, the
-storage contract on MinIO, the image contract always. Stays `emulated`. Not done, needs an account: any deployment,
-`terraform validate`, a successful invalidation and its delay, Google's SigV4 for presigned PUTs, the load balancer
+storage contract on MinIO, the image contract always. Stays `emulated`. `terraform validate` passes with the provider
+(D202). Not done, needs an account: any deployment, a successful invalidation and its delay, Google's SigV4 for presigned PUTs, the load balancer
 header on a real request, the event loop block on a real instance (not measured), costs.
 
 ## E6. The benchmark in GitHub Actions
@@ -242,46 +243,6 @@ confirmations. Nothing runs until a platform is enabled and deployed.
 ## Open findings from verification
 
 Opus verification of the adapters on 2026-11-02 found nothing that blocks a commit with every platform off (the two
-GCP blockers are fixed, D200). All adapters stay `emulated`. These items are open and none is fixed yet.
-
-Before enabling AWS:
-
-- `/api/health/deep` always answers 503: the roles cover `originals/*` and `variants/*`, the probe key is
-  `healthcheck/probe`. Load setup waits for a 200, so every scenario stops there.
-- Every cookie mutation answers 403: Host is the function URL, Origin is CloudFront, nothing sets `x-forwarded-host`.
-  One line in the viewer function fixes it.
-- `rum.js` is cached for a year by `scripts/deploy.mjs`, and no deploy sets a version, so S14 sees `dev`.
-- The 3008 MB of `template.yaml` is below the 3.0 to 3.2 GiB of D79. CloudFront allows 15 wildcard invalidations in
-  progress, so a burst of purges fails with the row already private.
-- The temporary secrets file of `scripts/deploy.mjs` survives SIGTERM and SIGINT. D193 overstates what ElasticMQ proves:
-  the contract test passes without `ChangeMessageVisibility`, only unit tests catch it.
-
-Before enabling Vercel:
-
-- Functions may not load unbundled (`"type": "module"` with extensionless imports); prebundle like `adapters/aws`.
-- `/login`, `/signup` and `/app/files/<id>` serve the landing page, so S13 cannot reach the panel.
-- `/f` has no tag and no CDN header, against D199; the page stays public for 60 s plus 600 s after unpublish.
-- No `regions` and no `HOSTMARK_REGION`: `/f` reports `local` and functions run away from the database. No version.
-- A purge with no request context silently does nothing and `delete_file` records it as done. The DLQ copy can be lost
-  when its send fails. The killer job has no `maxDeliveries`.
-- `api/queue.ts` trusts every POST: `handleCallback` of `@vercel/queue` 0.10.0 checks no signature or token and takes the
-  job from the request body. The only protection is the documented "no public URL" of consumer functions. Prove it on
-  the first deployment: a forged `ce-type` POST to `/api/queue` must not reach the handler.
-
-Before enabling Google Cloud:
-
-- Add a Cloud login to `deploy.yml`. Run `terraform validate`; nothing has parsed `infra/` with the provider.
-- Cloud Run kills 10 s after SIGTERM by its documentation, so the 55 s grace is wrong and a long job loses an attempt.
-- The `hostmark-seed` job prints generated seed keys to Cloud Logging. The DLQ reader subscription has no
-  `expiration_policy`, so it lapses after 31 idle days and dead letters are lost.
-- Four sequential purge calls per file allow about 125 files a minute, the metadata token fetch has no timeout, and the
-  effective Max TTL of `/media` is unresolved.
-
-All platforms:
-
-- `/media` is immutable for a year and VPS, Fly and Railway have no purger. A CDN in front of the VPS, as the spec plans,
-  keeps an unpublished file for up to a year. `packages/core/src/ports.ts` says only `local` lacks a purger.
-- The contract suite does not detect loss of renewal, ack or the failure deadline: three of five mutants passed.
-- S13, S14 and S15 cannot run as written on AWS and Vercel, against acceptance criteria 4 and 6, and no decision says so.
-- Not recorded as comparability limits: compression differs on GCP and VPS (S10), GCP autoscales the api while VPS, Fly
-  and Railway run one, Fly `shared-cpu-*` throttles under load, and api memory differs between platforms.
+GCP blockers are fixed, D200). All adapters stay `emulated`. Every item found then is fixed: AWS D210 to D214, GCP
+D220 to D224 and the login D241, Vercel D230 to D235, all platforms D205 to D208. What a fix could not prove
+without an account is listed in its decision.

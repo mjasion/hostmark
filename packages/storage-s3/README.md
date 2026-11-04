@@ -1,16 +1,24 @@
 # @hostmark/storage-s3
 
 `ObjectStorage` for any S3-compatible API (R2, S3, GCS interoperable mode, Tigris, MinIO) on `aws4fetch`.
-Path-style URLs, Web Crypto and `fetch` only, so it runs on Workers, Node and Bun.
+Path-style URLs by default, virtual-hosted-style on request; Web Crypto and `fetch` only, so it runs on Workers, Node
+and Bun.
 
 ```ts
-createS3Storage({ endpoint, publicEndpoint?, bucket, region, accessKeyId, secretAccessKey, fetch? })
+createS3Storage({ endpoint, publicEndpoint?, bucket, region, accessKeyId, secretAccessKey, virtualHost?, fetch? })
 ```
 
 Adapters supply the credentials from their own environment (no secrets in the repository).
 
 - `publicEndpoint` is used only for presigned URLs. SigV4 signs the host, so it must be the host the browser
   will call. Server-side calls use `endpoint`.
+- `virtualHost: true` puts the bucket in the host name (`https://<bucket>.<host>/<key>`) for every server call and
+  every presigned URL, of `endpoint` and `publicEndpoint` alike (D280). Tigris needs it: its documentation says
+  presigned URLs must be virtual-hosted and path-style URLs are not supported for buckets created since 2025-02-19. The bucket
+  name must then be one DNS label (3 to 63 lowercase letters, digits, hyphens; no dot, which the TLS wildcard
+  certificate would not cover), or `createS3Storage` throws. The default stays path-style, which MinIO behind a plain
+  host name (`http://minio:9000`) needs. `bucketUrl(endpoint, bucket, virtualHost)` is exported for bucket-level
+  calls (`init-bucket` of `packages/node-runtime`).
 - `presignPut` signs `content-type` and `content-length` (`bytes` is the exact length, D10). The client must
   send exactly these headers.
 - At most one retry on 5xx/429. Hidden retries distort benchmark latency.

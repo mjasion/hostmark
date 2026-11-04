@@ -1,5 +1,6 @@
 import { ApiError } from '@hostmark/contract/client';
 import type { QueryClient } from '@tanstack/react-query';
+import { endSession } from './api';
 import { getSession } from './auth';
 
 export const sessionKey = ['session'] as const;
@@ -18,8 +19,12 @@ const redirects = new WeakMap<QueryClient, () => void>();
 /** Where `signedOut` sends the user; set once by `createAppQueryClient`. */
 export const redirectWhenSignedOut = (qc: QueryClient, go: () => void) => redirects.set(qc, go);
 
-/** The one handling of a 401, for queries, mutations and uploads alike: forget user data, then go to login. */
+/**
+ * The one handling of a 401, for queries, mutations and uploads alike: end the session's requests and event
+ * streams, forget user data, then go to login.
+ */
 export function signedOut(qc: QueryClient) {
+  endSession();
   clearUserData(qc);
   qc.setQueryData(sessionKey, null);
   redirects.get(qc)?.();

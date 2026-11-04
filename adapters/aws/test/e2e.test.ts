@@ -15,6 +15,7 @@ import { makeJpeg } from '@hostmark/node-runtime/testing/fixtures';
 import { AwsClient } from 'aws4fetch';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { runCloudFrontFunction } from '../scripts/template-check';
 import { createApiApp } from '../src/app';
 import { handleSqsEvent } from '../src/queue';
 import { createRuntime, type Runtime } from '../src/runtime';
@@ -23,9 +24,12 @@ import { startEventSourceMapping } from './esm';
 // Needs all three stand-ins (README, "Tests"):
 //   DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55812/postgres
 //   S3_TEST_ENDPOINT=http://127.0.0.1:55810  SQS_TEST_ENDPOINT=http://127.0.0.1:55811
+//   S3_TEST_ACCESS_KEY and S3_TEST_SECRET_KEY as for the other S3 tests (default hostmark / hostmark-local-secret)
 const databaseUrl = process.env.DATABASE_URL;
 const s3Endpoint = process.env.S3_TEST_ENDPOINT;
 const sqsEndpoint = process.env.SQS_TEST_ENDPOINT;
+const accessKeyId = process.env.S3_TEST_ACCESS_KEY ?? 'hostmark';
+const secretAccessKey = process.env.S3_TEST_SECRET_KEY ?? 'hostmark-local-secret';
 const ready = Boolean(databaseUrl && s3Endpoint && sqsEndpoint);
 
 const API_KEY = 'e2e-api-key-0123456789abcdef';
@@ -68,8 +72,8 @@ describe.skipIf(!ready)('api app and worker on Postgres, MinIO and ElasticMQ', (
 
     const bucket = `e2e-${Date.now()}`;
     const s3 = new AwsClient({
-      accessKeyId: 'hostmark',
-      secretAccessKey: 'hostmark-aws-secret',
+      accessKeyId,
+      secretAccessKey,
       service: 's3',
       region: 'us-east-1',
     });
@@ -104,8 +108,8 @@ describe.skipIf(!ready)('api app and worker on Postgres, MinIO and ElasticMQ', (
       DATABASE_URL: dbUrl.toString(),
       BETTER_AUTH_SECRET: 'a-long-random-secret-for-the-e2e-0123456789',
       AWS_REGION: 'us-east-1',
-      AWS_ACCESS_KEY_ID: 'hostmark',
-      AWS_SECRET_ACCESS_KEY: 'hostmark-aws-secret',
+      AWS_ACCESS_KEY_ID: accessKeyId,
+      AWS_SECRET_ACCESS_KEY: secretAccessKey,
       S3_BUCKET: bucket,
       S3_ENDPOINT: s3Endpoint,
       SQS_QUEUE_URL: queueUrl,
@@ -178,6 +182,54 @@ describe.skipIf(!ready)('api app and worker on Postgres, MinIO and ElasticMQ', (
     await client.deleteFile(created.fileId);
     await until('the delete to purge', 30_000, async () => purged.length > 0);
     expect(purged.flat().some((p) => p.includes(created.fileId))).toBe(true);
+  });
+
+  it('accepts a cookie mutation that came through the viewer function, and refuses it without (D51)', async () => {
+    const app = createApiApp(() => api);
+    const functionUrlHost = 'abc123.lambda-url.us-east-1.on.aws';
+    // What reaches the function URL: the viewer headers after ApiViewerFunction, Host replaced by the origin request
+    // policy (AllViewerExceptHostHeader), the origin custom header added.
+    const viaCloudFront = (path: string, init: RequestInit, runFunction = true) => {
+      const viewer = new Headers(init.headers);
+      viewer.set('host', new URL(PUBLIC_URL).host);
+      viewer.set('origin', PUBLIC_URL);
+      let headers = viewer;
+      if (runFunction) {
+        const event = Object.fromEntries([...viewer].map(([k, v]) => [k, { value: v }]));
+        const out = runCloudFrontFunction('ApiViewerFunction', { uri: path, headers: event }, '198.51.100.7');
+        headers = new Headers(Object.entries(out.headers).map(([k, v]) => [k, v.value]));
+      }
+      headers.set('host', functionUrlHost);
+      headers.set('x-hostmark-origin-secret', ORIGIN_SECRET);
+      return app.request(`https://${functionUrlHost}${path}`, { ...init, headers });
+    };
+    const json = { 'content-type': 'application/json' };
+    const signUp = await viaCloudFront('/api/auth/sign-up/email', {
+      method: 'POST',
+      headers: json,
+      body: JSON.stringify({
+        email: `cf-${randomUUID()}@example.test`,
+        password: 'correct horse battery staple',
+        name: 'CF',
+      }),
+    });
+    expect(signUp.status).toBe(200);
+    const cookie = signUp.headers
+      .getSetCookie()
+      .map((c) => c.split(';')[0])
+      .join('; ');
+    const upload = (runFunction: boolean) =>
+      viaCloudFront(
+        '/api/uploads',
+        {
+          method: 'POST',
+          headers: { ...json, cookie },
+          body: JSON.stringify({ contentType: 'image/jpeg', bytes: 1000 }),
+        },
+        runFunction,
+      );
+    expect((await upload(false)).status).toBe(403);
+    expect((await upload(true)).status).toBe(201);
   });
 
   it('refuses a request without the origin secret', async () => {

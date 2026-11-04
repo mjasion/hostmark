@@ -15,18 +15,62 @@ Run from the repository root; the build context must contain the workspace.
 ```sh
 fly apps create <your-app-name>                  # edit app = "..." in fly.toml to match: app names are global
 fly storage create -a <your-app-name>            # Tigris: sets AWS_*, AWS_ENDPOINT_URL_S3 and BUCKET_NAME as secrets
-fly redis create                                 # Upstash Redis; copy its URL
+fly redis create                                 # Upstash Redis: no eviction; copy its URL (see Redis)
+fly redis update <redis-name>                    # choose a fixed price plan (BullMQ polls constantly)
 fly secrets set -a <your-app-name> \
   DATABASE_URL=... REDIS_URL=... BETTER_AUTH_SECRET=... \
   SEED_API_KEY=... SEED_ADMIN_API_KEY=... PUBLIC_URL=https://<your-app-name>.fly.dev
-fly deploy -a <your-app-name> --config adapters/fly/fly.toml --dockerfile adapters/fly/Dockerfile --ha=false .
+fly deploy -a <your-app-name> --config adapters/fly/fly.toml --dockerfile adapters/fly/Dockerfile \
+  --build-arg APP_VERSION=$(git rev-parse --short=12 HEAD) --ha=false .
 fly scale count api=1 worker=2 scheduler=1 -a <your-app-name>
 fly status -a <your-app-name>                    # scheduler must list exactly one machine
 ```
 
-`--ha=false` matters: without it Fly may start two machines per process group, and two schedulers run every job
-twice (see Scheduler). `release_command` runs the bucket setup (lifecycle), the migrations and the seed in a
-temporary machine before the machines are replaced. Optional: `OTLP_ENDPOINT` and `AUTH_SIGNUP_ENABLED`.
+`--ha=false` keeps one machine per process group; a second scheduler machine only waits on the leader lock (see
+Scheduler). `release_command` runs the bucket setup (lifecycle), the migrations and the seed in a
+temporary machine before the machines are replaced. `APP_VERSION` becomes `x-version` and `service.version`; without
+it every deploy reports `dev` (S14). The deploy strategy is `bluegreen` (D282): a new machine starts beside each old
+one and traffic moves once the new api machine passes `/api/health`, so the one api machine is replaced without a
+gap. Optional: `OTLP_ENDPOINT` and `AUTH_SIGNUP_ENABLED`.
+
+## Deploy from GitHub Actions
+
+`pnpm platform deploy fly` (D70, D121) runs `scripts/deploy.mjs` from the repository root:
+
+```sh
+flyctl deploy --config adapters/fly/fly.toml --dockerfile adapters/fly/Dockerfile --build-arg APP_VERSION=<version> --ha=false --yes .
+flyctl scale count api=1 worker=2 scheduler=1 --config adapters/fly/fly.toml --yes
+flyctl status --config adapters/fly/fly.toml
+```
+
+So the D159 rule is applied by every deploy: `--ha=false`, and the counts set again with exactly one scheduler. A
+failed deploy stops before the scale. `<version>` is `APP_VERSION` when set, else the first 12 characters of the
+checked-out commit (D281); the script refuses to run without either, and refuses a value that is not a plain token. `--dry-run` prints the commands. `deploy.yml` installs flyctl 0.5.3 from its
+GitHub release after checking the SHA-256 that the release publishes (D242).
+
+Once, with your own login: the steps above up to `fly secrets set` (app, Tigris, Upstash, secrets; `app` in
+`fly.toml` set to the app name), then a deploy token for that app only:
+
+```sh
+fly tokens create deploy -a <your-app-name> -x 2160h    # 90 days; prints the token once
+```
+
+In GitHub, environment `fly` (deployment branches: `main` only):
+
+| Secret          | Value                                           |
+| --------------- | ----------------------------------------------- |
+| `FLY_API_TOKEN` | the deploy token, including its `FlyV1 ` prefix |
+
+The application secrets stay in Fly (`fly secrets set`); the pipeline never sees them. flyctl reads the token from
+its environment; it is never an argument, and the script scrubs it from the output (`test/deploy.test.ts`, with a
+fake `flyctl` that echoes it).
+
+Not proven (needs an account): that a deploy token (`fly tokens create deploy`, "limited to managing a single app and
+its resources" in the flyctl help) may use the remote builder and run `scale count`; that `--dockerfile` with
+`--config` from another directory builds `adapters/fly/Dockerfile` with the repository root as context; that
+`--ha=false` and `scale count` leave exactly one scheduler machine after a redeploy (check `fly status`); build and
+release command times; that `bluegreen` keeps the api answering during a deploy, and how it treats the worker and
+scheduler groups, which have no health check.
 
 ## Required variables
 
@@ -35,6 +79,7 @@ temporary machine before the machines are replaced. Optional: `OTLP_ENDPOINT` an
 | `DATABASE_URL`                                                                                   | secret: Neon connection string                                                                                               |
 | `REDIS_URL`                                                                                      | secret: Upstash URL from `fly redis create`                                                                                  |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL_S3`, `BUCKET_NAME`, `AWS_REGION` | secrets set by `fly storage create`; `src/platform.ts` maps them to `S3_*` (explicit `S3_*` wins; region defaults to `auto`) |
+| `S3_VIRTUAL_HOST`                                                                                | `true` by default here (Tigris needs virtual-hosted URLs, D280); set `false` only for a path-style S3 server                 |
 | `BETTER_AUTH_SECRET`, `PUBLIC_URL`                                                               | secret: 32+ characters; the public origin                                                                                    |
 | `SEED_API_KEY`, `SEED_ADMIN_API_KEY`                                                             | secret: seed keys (D14)                                                                                                      |
 | `OTLP_ENDPOINT`                                                                                  | optional: OTLP/HTTP base URL                                                                                                 |
@@ -54,6 +99,16 @@ own address. Other limits: with Cloudflare or another proxy in front, the header
 on the private network (`.internal`, Flycast) reach `:8080` without the proxy and could set the header, so keep the
 org's private network trusted.
 
+## Tigris URLs (D280)
+
+Tigris documents that presigned URLs need path-style requests turned off, so they are virtual-hosted
+(`https://<bucket>.fly.storage.tigris.dev/<key>`), and its bucket pages say path-style URLs are not supported for
+buckets created on or after 2025-02-19. `src/platform.ts` therefore sets `S3_VIRTUAL_HOST=true`,
+and `@hostmark/storage-s3` puts the bucket in the host name for every server call and every presigned URL, signing
+that host; `init-bucket` uses the same URLs. The bucket name must be one DNS label (lowercase letters, digits,
+hyphens; no dot), which `fly storage create` names produce, or the runtime refuses to start. Checked with unit tests
+(URL shapes, the signed host); not run against Tigris.
+
 ## Bucket lifecycle (D74)
 
 The release command runs `dist/init-bucket.js`: if the bucket exists (HEAD answers 200, as for the bucket that `fly
@@ -64,9 +119,28 @@ the S3 calls were run against MinIO only. Tigris and the standard CORS call: no 
 
 ## Scheduler
 
-Exactly one machine in the `scheduler` group. `fly.toml` cannot pin a machine count, so the rule is operational:
-`--ha=false` on deploy and `fly scale count scheduler=1`. Two schedulers would run each job twice (D19, D56, D67,
-`protect` is per process). A Postgres advisory lock would remove the rule; it is not implemented.
+One machine in the `scheduler` group is enough: `--ha=false` on deploy and `fly scale count scheduler=1`.
+`scripts/deploy.mjs` does both on every deploy (tested against a fake `flyctl`); a manual deploy must do them by hand.
+A second machine is safe: only the scheduler that holds the Postgres advisory lock runs the jobs, the other takes over
+when that session ends (D204). The lock needs a direct or session-mode `DATABASE_URL`, not a transaction-mode pooler.
+
+## Redis
+
+Upstash Redis from `fly redis create`. BullMQ needs Redis to refuse writes when it is full rather than drop keys:
+**never enable eviction** (`fly redis create` asks; Upstash's default is to disallow writes at the limit). BullMQ and
+the scheduler poll Redis constantly, and Fly's Upstash page recommends a fixed price plan for BullMQ, so choose one
+with `fly redis update` before a load test; pay-as-you-go bills per command. ioredis 6 resolves the host name with
+`family: 0` (IPv4 and IPv6), so an IPv6-only private address needs no `?family=6`.
+
+## Concurrency and idle timeout
+
+`[http_service.concurrency]` counts HTTP requests (`type = "requests"`, which Fly recommends for web services) with
+`soft_limit = 200` and `hard_limit = 1000` (D282). Fly's default is connection counting with a soft limit of 20, which
+would mark one api machine as full far below S6. The hard limit stays above S6's in-flight requests and the open SSE
+streams, so Fly's proxy does not shed load the machine could take. `[http_service.http_options] idle_timeout = 75`
+keeps the proxy from closing a quiet connection before an SSE stream (at most 60 s, with a keepalive every 15 s,
+D236) ends. Fly documents the key but not its default or unit; seconds are assumed from its example. Not measured on
+Fly.
 
 ## Worker sizing
 
@@ -79,8 +153,12 @@ instance). `kill_timeout = 70` gives a job time to finish on stop.
 
 `pnpm --filter @hostmark/adapter-fly test` parses `fly.toml` with `smol-toml` and checks: three process groups, only
 `api` behind `http_service`, a machine size per group with 4 GB for the worker, `WORKER_CONCURRENCY=1`, the release
-command order (bucket, migrate, seed), RUM build args from the closed lists and no secret in `[env]`; it also checks
-the Tigris variable mapping and that the Dockerfile equals the local one apart from the adapter name. The port
+command order (bucket, migrate, seed), RUM build args from the closed lists, no secret in `[env]`, request-based
+concurrency limits, the idle timeout and `bluegreen` with a health check; it also checks the Tigris variable mapping
+(with `S3_VIRTUAL_HOST`) and that the Dockerfile equals the local one apart from the adapter name. The deploy script
+runs against a fake `flyctl`: the commands, `--build-arg APP_VERSION` from the variable or the commit, `--ha=false`, a
+count for exactly the process groups of `fly.toml` with one scheduler, stop on failure, the token never in argv or
+output, refusal without the token or with a malformed version. The port
 contracts run with stand-ins (`REDIS_TEST_URL`, `S3_TEST_ENDPOINT`, see `adapters/local/README.md`).
 `flyctl config validate` was **not run**: it needs `flyctl auth login`, and this work uses no account. TOML syntax and
 the keys above are checked by the test, not against Fly's schema.
@@ -91,6 +169,6 @@ Checked (search result summaries, not the primary pages): `Fly-Client-IP` meanin
 Tigris variables set by `fly storage create`, Tigris expiration rules; process groups (`[processes]` with services
 targeting a group). Not verified: `kill_timeout`, `[[restart]]`, `[[vm]] processes` and `auto_stop_machines = "off"`
 against the current reference, `--dockerfile` with `--config` from another directory, Upstash Redis behaviour with
-BullMQ (it needs `maxmemory-policy noeviction` and polls constantly, so pay-per-command plans can cost a lot; the
-internal address may be IPv6-only and need `?family=6`), the Tigris endpoint with signing region `auto`, free
-allowances and prices.
+BullMQ beyond the points under Redis, the Tigris endpoint with signing region `auto`, free allowances and prices.
+Read in the docs repository (superfly/docs): the deployment strategies, `[http_service.concurrency]`,
+`http_options.idle_timeout`, Upstash eviction and fixed price plans.

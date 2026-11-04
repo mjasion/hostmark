@@ -207,3 +207,92 @@ test('no workflow expression is expanded inside a shell command, and every actio
     }
   }
 });
+
+/** The text of one job of a workflow, from its key to the next job key. */
+function jobText(workflow, name) {
+  const start = workflow.search(new RegExp(`^ {2}${name}:\\n`, 'm'));
+  assert.ok(start >= 0, `job ${name}`);
+  const rest = workflow.slice(start + 1);
+  const end = rest.search(/^ {2}[\w-]+:\n/m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+/** The steps of a job, each with its `name:` (or its first line) and its text. */
+function steps(job) {
+  return job
+    .split(/^ {6}- /m)
+    .slice(1)
+    .map((text) => ({ name: /^(?:name: )?(.*)$/m.exec(text)?.[1] ?? '', text }));
+}
+
+test('only the deploy job may request an OIDC token; the default and the plan job read contents only', () => {
+  const workflow = workflowText('deploy.yml');
+  assert.match(workflow, /^permissions:\n {2}contents: read\n\n/m);
+  assert.equal(workflow.match(/^ +id-token:/gm)?.length, 1);
+  assert.doesNotMatch(jobText(workflow, 'plan'), /permissions:|id-token/);
+  assert.match(jobText(workflow, 'deploy'), /^ {4}permissions:\n {6}contents: read\n {6}id-token: write\n/m);
+});
+
+test('each login and tool step runs for its own platform only, after the last install', () => {
+  const deploy = steps(jobText(workflowText('deploy.yml'), 'deploy'));
+  const install = deploy.findLastIndex((s) => /pnpm install/.test(s.text));
+  const expected = {
+    'Install the Railway CLI': 'railway',
+    'Install flyctl': 'fly',
+    'Install the Vercel CLI': 'vercel',
+    'Log in to AWS': 'aws',
+    'Log in to Google Cloud': 'gcp',
+    'Set up gcloud': 'gcp',
+    'Set up Terraform': 'gcp',
+  };
+  for (const [name, platform] of Object.entries(expected)) {
+    const index = deploy.findIndex((s) => s.name === name);
+    assert.ok(index > install, `${name} exists and comes after the install`);
+    assert.match(deploy[index].text, new RegExp(`^ {8}if: matrix\\.name == '${platform}'$`, 'm'), name);
+  }
+  // Between the install and the deploy step, every step belongs to one platform.
+  for (const step of deploy.slice(install + 1, -1))
+    assert.match(step.text, /^ {8}if: matrix\.name == '[a-z]+'$/m, step.name);
+  assert.equal(deploy.at(-1).name, 'Deploy');
+
+  // AWS assumes the role through OIDC, never with a stored key; GCP uses Workload Identity Federation, no key file.
+  const aws = deploy.find((s) => s.name === 'Log in to AWS').text;
+  assert.match(aws, /role-to-assume: \$\{\{ secrets\.AWS_ROLE_ARN \}\}/);
+  assert.doesNotMatch(aws, /aws-access-key-id|aws-secret-access-key/);
+  const gcp = deploy.find((s) => s.name === 'Log in to Google Cloud').text;
+  assert.match(gcp, /workload_identity_provider: \$\{\{ secrets\.GCP_WORKLOAD_IDENTITY_PROVIDER \}\}/);
+  assert.match(gcp, /service_account: \$\{\{ secrets\.GCP_SERVICE_ACCOUNT \}\}/);
+  assert.doesNotMatch(gcp, /credentials_json/);
+});
+
+test('a downloaded CLI is pinned to a version and checked against a SHA-256 before it is unpacked', () => {
+  const deploy = steps(jobText(workflowText('deploy.yml'), 'deploy'));
+  const downloads = deploy.filter((s) => /curl /.test(s.text));
+  assert.equal(downloads.length, 2);
+  for (const step of downloads) {
+    assert.match(step.text, /VERSION: \d+\.\d+\.\d+\n/, step.name);
+    assert.match(step.text, /SHA256: [0-9a-f]{64}\n/, step.name);
+    assert.ok(step.text.indexOf('sha256sum --check') < step.text.indexOf('tar -x'), step.name);
+  }
+});
+
+test('the vercel job installs the CLI its deploy script spawns, at one exact version (D270)', () => {
+  const deploy = steps(jobText(workflowText('deploy.yml'), 'deploy'));
+  const step = deploy.find((s) => s.name === 'Install the Vercel CLI');
+  assert.ok(step, 'Install the Vercel CLI');
+  const version = /^ {8}run: npm install --global vercel@(\d+\.\d+\.\d+)$/m.exec(step.text)?.[1];
+  assert.ok(version, 'an exact version, no range and no tag');
+  assert.doesNotMatch(step.text, /secrets\./);
+  const script = readFileSync(join(repo, 'adapters', 'vercel', 'scripts', 'deploy.mjs'), 'utf8');
+  assert.match(script, /run\('vercel', \[/);
+  // The README names the version the workflow installs.
+  const readme = readFileSync(join(repo, 'adapters', 'vercel', 'README.md'), 'utf8');
+  assert.ok(readme.includes(`vercel@${version}`), `adapters/vercel/README.md names vercel@${version}`);
+});
+
+test('every platform that deploy.yml can reach has a platform-deploy script', () => {
+  for (const p of real.filter((x) => !['cloudflare', 'local'].includes(x.name))) {
+    const pkg = JSON.parse(readFileSync(join(repo, p.adapter, 'package.json'), 'utf8'));
+    assert.ok(pkg.scripts?.['platform-deploy'], `${p.adapter} has no platform-deploy script`);
+  }
+});

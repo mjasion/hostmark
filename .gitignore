@@ -49,3 +49,9 @@ adapters/cloudflare/wrangler.*.generated.jsonc
 # adapters/vercel: web build copied next to the functions, and the linked project
 adapters/vercel/public/
 .vercel/
+
+# Credentials file of google-github-actions/auth in the workspace (deploy.yml, gcp)
+gha-creds-*.json
+
+# A per-run backend of adapters/gcp/scripts/deploy.sh (D247)
+adapters/gcp/infra/*_override.tf

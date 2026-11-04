@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { headersFile } from './headers.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = resolve(root, '..', '..');
@@ -31,9 +32,6 @@ if (!existsSync(join(dist, 'app', 'index.html'))) {
 rmSync(assets, { recursive: true, force: true });
 mkdirSync(assets, { recursive: true });
 cpSync(dist, assets, { recursive: true });
-// Same cache policy as the Node static handler (adapters/local/src/static.ts, D88).
-writeFileSync(
-  join(assets, '_headers'),
-  `/assets/*\n  Cache-Control: public, max-age=31536000, immutable\n/*\n  Cache-Control: public, max-age=300\n`,
-);
+// Same cache policy as the Node static handler (packages/node-runtime/src/static.ts, D88), one value per file (D251).
+writeFileSync(join(assets, '_headers'), headersFile());
 console.log(`assets ready in ${assets}`);

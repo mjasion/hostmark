@@ -1,5 +1,6 @@
 // Creates the bucket and applies lifecycle and CORS. Idempotent; run once per deploy, before the services start.
 import { createHash } from 'node:crypto';
+import { bucketUrl as s3BucketUrl } from '@hostmark/storage-s3';
 import { AwsClient } from 'aws4fetch';
 import { loadPlatformEnv, type NodePlatform } from './platform';
 
@@ -13,7 +14,8 @@ export async function initBucket(platform: NodePlatform): Promise<void> {
     // aws4fetch retries every 5xx, 501 included, with backoff: the CORS call that MinIO cannot serve took 14 to 33 s.
     retries: 0,
   });
-  const bucketUrl = `${env.S3_ENDPOINT.replace(/\/+$/, '')}/${env.S3_BUCKET}`;
+  // Path-style unless S3_VIRTUAL_HOST is true (Tigris, D280): the same URLs as the storage adapter.
+  const bucketUrl = s3BucketUrl(env.S3_ENDPOINT, env.S3_BUCKET, env.S3_VIRTUAL_HOST === 'true');
 
   async function call(subresource: string, body?: string): Promise<Response> {
     const headers: Record<string, string> = {};

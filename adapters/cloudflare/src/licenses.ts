@@ -1,5 +1,5 @@
 // The text travels inside the bundle: a deployed Worker has no node_modules next to it. Regenerate with
-// `pnpm licenses` (`pnpm check` fails when it is stale).
+// `pnpm run licenses` (`pnpm check` fails when it is stale).
 import text from '../licenses/THIRD-PARTY-LICENSES.txt';
 
 export const LICENSES_PATH = '/THIRD-PARTY-LICENSES.txt';

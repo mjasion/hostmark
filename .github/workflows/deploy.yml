@@ -1,16 +1,23 @@
 # Manual deployment of one platform, or of every enabled one (D70). It never runs on push: a merge to main deploys
 # nothing, and a dispatch from any other branch does nothing. Credentials are GitHub Environment secrets, one
-# environment per platform, named as in platforms.json, and are set on the deploy step only (D123).
+# environment per platform, named as in platforms.json. They are read after the last install only, by the login step
+# of the platform and by the deploy step (D123, D241).
 #
 # Cloudflare is not deployed here. Its one route is cloudflare-production.yml, which rolls out in steps and rolls back
 # by itself; a direct deploy from this file would bypass that. The choice below omits it and the plan job drops it
 # from "all" (`--exclude cloudflare`); tools/platform/platform.test.mjs pins both.
 #
-# What is not wired yet, so a dispatch for these ends in a failed job and deploys nothing:
-#   - no cloud login step and no `id-token: write`: AWS_ROLE_ARN is never assumed, GCP has no credentials
-#     (adapters/gcp/scripts/deploy.sh needs Application Default Credentials);
-#   - only adapters/aws, adapters/gcp and adapters/vercel have a `platform-deploy` script; the other adapters fail with
-#     "Missing script" until they get one.
+# Logins and tools, each in the job of its own platform only (D241, D242):
+#   - aws: OIDC, assumes AWS_ROLE_ARN, no stored key. The `aws` CLI is the one of the runner image.
+#   - gcp: OIDC through Workload Identity Federation, impersonating GCP_SERVICE_ACCOUNT, no key file. gcloud and
+#     Terraform at pinned versions.
+#   - railway, fly: the CLI at a pinned version, checked against a pinned SHA-256. The token is the only credential.
+#   - vps: ssh of the runner image. The key and the pinned host key exist as files of the deploy script only.
+#   - vercel: the CLI at a pinned version from npm; the token is the only credential (adapters/vercel/README.md, D270).
+# Only the deploy job may request an OIDC token (`id-token: write`); the plan job and the workflow default may not.
+#
+# gcp keeps its Terraform state in GCP_STATE_BUCKET and applies without a prompt here (D247).
+# local is not a hosting platform and has no `platform-deploy` script, so a dispatch for it ends in a failed job.
 name: deploy
 
 on:
@@ -55,6 +62,10 @@ jobs:
     if: github.ref == 'refs/heads/main' && needs.plan.outputs.count != '0'
     runs-on: ubuntu-latest
     environment: ${{ matrix.name }}
+    # The AWS and GCP login steps exchange the job's OIDC token; no other job can request one.
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -65,9 +76,65 @@ jobs:
           node-version: 22
       - run: npm install --global pnpm@12.15.0
       - run: pnpm install --frozen-lockfile
-      # Every secret that platforms.json names, as a reference, and only here, so nothing is set during the install.
-      # A platform's environment holds only its own, the rest are empty. `deploy` names what is missing. The test in
-      # tools/platform/platform.test.mjs keeps this list equal to platforms.json.
+      # Platform tools and logins come after the install, so no dependency script runs with a credential.
+      - name: Install the Railway CLI
+        if: matrix.name == 'railway'
+        env:
+          VERSION: 5.71.0
+          SHA256: 2e682fd2ddf8d6fdf9e46d9d99d99646ff0022a6abb0c2bca93011348a269fb9
+        run: |
+          archive="$RUNNER_TEMP/railway.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/railwayapp/cli/releases/download/v$VERSION/railway-v$VERSION-x86_64-unknown-linux-musl.tar.gz"
+          echo "$SHA256  $archive" | sha256sum --check --strict -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" railway
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install flyctl
+        if: matrix.name == 'fly'
+        env:
+          VERSION: 0.5.3
+          SHA256: 706ed88c1185831aab86ced828d42638f29e73cb6e09f8cae0371d77a97c814f
+        run: |
+          archive="$RUNNER_TEMP/flyctl.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/superfly/flyctl/releases/download/v$VERSION/flyctl_${VERSION}_Linux_x86_64.tar.gz"
+          echo "$SHA256  $archive" | sha256sum --check --strict -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin" flyctl
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # An exact version from the npm registry; npm checks the integrity of each tarball, no credential is set yet.
+      - name: Install the Vercel CLI
+        if: matrix.name == 'vercel'
+        run: npm install --global vercel@65.9.0
+      - name: Log in to AWS
+        if: matrix.name == 'aws'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          mask-aws-account-id: true
+      - name: Log in to Google Cloud
+        if: matrix.name == 'gcp'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          project_id: ${{ secrets.GCP_PROJECT }}
+      - name: Set up gcloud
+        if: matrix.name == 'gcp'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: 590.0.1
+      - name: Set up Terraform
+        if: matrix.name == 'gcp'
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.17.1
+          terraform_wrapper: false
+      # Every secret that platforms.json names, as a reference. A platform's environment holds only its own, the rest
+      # are empty. `deploy` names what is missing. The test in tools/platform/platform.test.mjs keeps this list equal
+      # to platforms.json.
       - name: Deploy
         env:
           PLATFORM: ${{ matrix.name }}
@@ -82,6 +149,9 @@ jobs:
           DOMAIN: ${{ secrets.DOMAIN }}
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          GCP_STATE_BUCKET: ${{ secrets.GCP_STATE_BUCKET }}
           ORIGIN_SECRET: ${{ secrets.ORIGIN_SECRET }}
           PUBLIC_URL: ${{ secrets.PUBLIC_URL }}
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
@@ -89,10 +159,13 @@ jobs:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
           S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
           S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          SEED_API_KEY: ${{ secrets.SEED_API_KEY }}
+          SEED_ADMIN_API_KEY: ${{ secrets.SEED_ADMIN_API_KEY }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_SSH_USER: ${{ secrets.VPS_SSH_USER }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
         run: pnpm platform deploy "$PLATFORM"

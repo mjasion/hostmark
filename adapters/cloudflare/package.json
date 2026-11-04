@@ -7,6 +7,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "node scripts/build.mjs",
+    "bootstrap": "node scripts/bootstrap.mjs",
     "licenses": "node scripts/licenses.mjs",
     "check": "node --import tsx scripts/check-config.ts",
     "measure:pixels": "node --import tsx scripts/measure-pixels-fixtures.ts .build/measure/jpegs",
@@ -18,12 +19,12 @@
     "@jsquash/resize": "2.1.1",
     "@jsquash/webp": "1.5.0",
     "aws4fetch": "1.0.20",
-    "hono": "4.13.14",
+    "hono": "4.13.16",
     "postgres": "4.0.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20261101.1",
+    "@cloudflare/workers-types": "5.20261103.1",
     "@hostmark/auth": "workspace:*",
     "@hostmark/contract": "workspace:*",
     "@hostmark/core": "workspace:*",
@@ -34,6 +35,6 @@
     "esbuild": "0.28.2",
     "miniflare": "4.20260730.0",
     "tsx": "4.23.15",
-    "wrangler": "4.156.0"
+    "wrangler": "4.157.0"
   }
 }

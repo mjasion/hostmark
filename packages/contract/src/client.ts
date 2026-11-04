@@ -109,6 +109,7 @@ export function createClient(options: ClientOptions = {}) {
     stats: () => request({ method: 'GET', path: '/api/stats', schema: StatsResponse }),
     debugCpu: (ms: number) =>
       request({ method: 'POST', path: '/api/debug/cpu', query: { ms }, schema: DebugCpuResponse }),
+    debugPurge: (id: string) => request({ method: 'POST', path: `/api/debug/purge/${id}` }),
     rum: (body: RumRequest) => request({ method: 'POST', path: '/api/rum', body }),
     /** URL for `EventSource`; the stream itself is not wrapped. */
     eventsUrl: (id: string) => `${baseUrl}/api/files/${id}/events`,

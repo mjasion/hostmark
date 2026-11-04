@@ -93,6 +93,33 @@ describe.skipIf(!databaseUrl)('CDN purge on unpublish and delete', () => {
     expect((await h.row(id)).purgedAt).toBeNull();
   });
 
+  describe('POST /api/debug/purge/:id (S12, S15; D206)', () => {
+    const purge = (id: string, key: string) => h.request(`/api/debug/purge/${id}`, { method: 'POST', key });
+
+    it('purges the public paths of a file for an admin key', async () => {
+      const id = crypto.randomUUID();
+      expect((await purge(id, KEYS.admin)).status).toBe(204);
+      expect(purger.calls).toEqual([publicPaths(id)]);
+    });
+
+    it('refuses any other key without purging', async () => {
+      expect((await purge(crypto.randomUUID(), KEYS.alice)).status).toBe(403);
+      expect(purger.calls).toEqual([]);
+    });
+
+    it('answers 503 when the CDN refuses, and 501 without a purger', async () => {
+      purger.failures = 1;
+      expect((await purge(crypto.randomUUID(), KEYS.admin)).status).toBe(503);
+      h.deps.purger = undefined;
+      expect((await purge(crypto.randomUUID(), KEYS.admin)).status).toBe(501);
+    });
+
+    it('validates the id', async () => {
+      expect((await purge('not-a-uuid', KEYS.admin)).status).toBe(400);
+      expect(purger.calls).toEqual([]);
+    });
+  });
+
   // A purge matches the path as written, so an alias of the id must not be served at all.
   it('serves a public file under its canonical path only, so no alias can be cached beyond a purge', async () => {
     const id = await h.uploadAndComplete(KEYS.alice, fakeImage(800, 600));

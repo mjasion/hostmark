@@ -14,6 +14,13 @@ export interface S3StorageOptions {
    */
   publicEndpoint?: string;
   bucket: string;
+  /**
+   * Virtual-hosted-style URLs (`https://<bucket>.<host>/<key>`) for every call and every presigned URL, instead of
+   * path-style (`https://<host>/<bucket>/<key>`). Tigris requires it (its presigned URLs must be
+   * virtual-hosted, and buckets created since 2025-02-19 do not support path-style); MinIO behind a plain host name needs path-style, the
+   * default.
+   */
+  virtualHost?: boolean;
   region: string;
   accessKeyId: string;
   secretAccessKey: string;
@@ -55,6 +62,26 @@ function encodeKey(key: string): string {
   return segments.map(encodeSegment).join('/');
 }
 
+/** A bucket name that is one DNS label: a dot would leave the TLS wildcard certificate of the host (Tigris, S3). */
+const DNS_BUCKET = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
+
+/**
+ * The URL of a bucket, without a trailing slash: `<endpoint>/<bucket>` (path-style), or the endpoint with the bucket
+ * as the first label of its host (virtual-hosted-style). A path on the endpoint is kept. Object keys follow after `/`.
+ */
+export function bucketUrl(endpoint: string, bucket: string, virtualHost = false): string {
+  const base = endpoint.replace(/\/+$/, '');
+  if (!virtualHost) return `${base}/${encodeSegment(bucket)}`;
+  if (!DNS_BUCKET.test(bucket)) {
+    throw new Error(
+      `Bucket ${JSON.stringify(bucket)} cannot be used with virtual-hosted URLs: it must be 3 to 63 lowercase letters, digits and hyphens`,
+    );
+  }
+  const url = new URL(base);
+  url.hostname = `${bucket}.${url.hostname}`;
+  return url.toString().replace(/\/+$/, '');
+}
+
 async function snippet(res: Response): Promise<string> {
   try {
     return (await res.text()).replace(/\s+/g, ' ').slice(0, 200);
@@ -64,8 +91,12 @@ async function snippet(res: Response): Promise<string> {
 }
 
 export function createS3Storage(options: S3StorageOptions): ObjectStorage {
-  const base = options.endpoint.replace(/\/+$/, '');
-  const publicBase = (options.publicEndpoint ?? options.endpoint).replace(/\/+$/, '');
+  const base = bucketUrl(options.endpoint, options.bucket, options.virtualHost);
+  const publicBase = bucketUrl(
+    options.publicEndpoint ?? options.endpoint,
+    options.bucket,
+    options.virtualHost,
+  );
   const doFetch = options.fetch ?? ((input: Request) => fetch(input));
   const cache = new Map<string, ArrayBuffer>();
   const client = new AwsClient({
@@ -78,8 +109,7 @@ export function createS3Storage(options: S3StorageOptions): ObjectStorage {
     retries: RETRIES,
   });
 
-  const objectUrl = (root: string, key: string) =>
-    `${root}/${encodeSegment(options.bucket)}/${encodeKey(key)}`;
+  const objectUrl = (root: string, key: string) => `${root}/${encodeKey(key)}`;
 
   async function send(method: string, key: string, init?: { body?: Uint8Array; contentType?: string }) {
     const url = objectUrl(base, key);

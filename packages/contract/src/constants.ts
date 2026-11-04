@@ -67,6 +67,8 @@ export const RUM_MAX_BODY_BYTES = 2048;
 // SSE (D20)
 export const SSE_POLL_INTERVAL_MS = 1000;
 export const SSE_MAX_DURATION_MS = 60_000;
+/** A comment line after this long without an event, so proxies and CDNs do not treat a quiet stream as idle (D236). */
+export const SSE_HEARTBEAT_MS = 15_000;
 export const SSE_FALLBACK_POLL_MS = 2000;
 
 // Headers (D9)
