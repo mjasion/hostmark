@@ -314,6 +314,12 @@ test('pnpm-upgrade.yml: dependency code runs without write access, and the patch
     ),
     'the patch filter allows only the manifests, the lockfile and the licence file',
   );
+  // The filter reads what the patch staged, both sides of a rename included, and only the index is committed (D331);
+  // tools/deps/upgrade-patch.test.mjs runs the step itself.
+  assert.match(pr, /git apply --index "\$patch"/);
+  assert.match(pr, /git diff --cached --name-only --no-renames/);
+  assert.doesNotMatch(pr, /git apply --numstat|commit -am/);
+  assert.match(pr, /commit -m 'chore: pnpm upgrade'/);
   // Minor and patch bumps through the script, majors never (D330).
   assert.match(update, /run: node tools\/deps\/bump\.mjs\n/);
   assert.doesNotMatch(text, /--latest/);

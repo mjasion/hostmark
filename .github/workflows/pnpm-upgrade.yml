@@ -3,7 +3,7 @@ name: pnpm upgrade
 # One PR with every minor and patch dependency bump at once (instead of a Renovate PR
 # per package), once a week; majors stay with Renovate and the owner. The branch is
 # rebuilt from main on every run — reset, bump, commit, force-push — so it never has
-# rebase conflicts: the lockfile is simply regenerated on top of the current main (D330).
+# rebase conflicts: the lockfile is simply regenerated on top of the current main (D330, D331).
 #
 # Two jobs: `update` runs the freshly updated dependency code (install scripts,
 # typecheck, tests, build) with a read-only token and hands over only a patch;
@@ -149,15 +149,18 @@ jobs:
         if: needs.update.outputs.changed == 'true'
         run: |
           patch="$RUNNER_TEMP/patch/upgrade.patch"
+          git checkout -B "$BRANCH" origin/main
+          git apply --index "$patch"
           # Only the workspace's manifests, the lockfile and the generated licence file may change.
-          bad=$(git apply --numstat "$patch" | cut -f3 \
+          # The check reads what the patch actually staged, both sides of a rename or copy included
+          # (--no-renames): numstat names only the new path of a rename, so a patch
+          # could rename any file onto a manifest and delete it that way.
+          bad=$(git diff --cached --name-only --no-renames \
             | grep -vxE 'package\.json|(apps|packages|adapters)/[^/]+/package\.json|pnpm-lock\.yaml|adapters/cloudflare/licenses/THIRD-PARTY-LICENSES\.txt' || true)
           if [ -n "$bad" ]; then
             echo "::error::Patch touches unexpected paths: $bad"
             exit 1
           fi
-          git checkout -B "$BRANCH" origin/main
-          git apply "$patch"
 
       - name: Commit and push
         if: needs.update.outputs.changed == 'true'
@@ -168,7 +171,7 @@ jobs:
           git -c core.hooksPath=/dev/null \
             -c user.name='github-actions[bot]' \
             -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-            commit -am 'chore: pnpm upgrade'
+            commit -m 'chore: pnpm upgrade'
 
           # Skip the force-push when the open branch already holds the same upgrade
           # on top of the same main (no new bumps, main did not move).
