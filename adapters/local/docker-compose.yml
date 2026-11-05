@@ -35,7 +35,7 @@ x-app: &app
 services:
   postgres:
     restart: unless-stopped
-    image: postgres:17.9-alpine
+    image: postgres:17.11-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
