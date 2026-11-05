@@ -27,6 +27,8 @@ const base = {
 describe('env', () => {
   it('accepts a complete production configuration', () => {
     expect(parseVars(base).ENVIRONMENT).toBe('production');
+    // D7, D335: signup stays off unless the deployment turns it on.
+    expect(parseVars(base).AUTH_SIGNUP_ENABLED).toBe('false');
   });
   it('requires the purge target and the origin secret outside local', () => {
     const { CLOUDFRONT_DISTRIBUTION_ID, ORIGIN_SECRET, ...rest } = base;

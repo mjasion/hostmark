@@ -71,11 +71,12 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * D100: a public URL is cached and purged by path, and a purge matches the path as written. An uppercase or
- * percent-encoded id would reach the same row under a path the purge does not cover, so only the canonical form (the
- * lowercase id, exactly as in the raw request path) is served.
+ * percent-encoded id, or a percent-encoded spelling of any other segment (`/media/<id>/%31%32%38.webp`), would reach
+ * the same row under a path the purge does not cover, so only the canonical form is served: the lowercase id, and the
+ * whole raw request path exactly as `publicPaths` writes it (D332).
  */
-const hasCanonicalId = (c: Context<HttpEnv>, id: string): boolean =>
-  UUID.test(id) && id === id.toLowerCase() && new URL(c.req.url).pathname.split('/')[2] === id;
+const isCanonical = (c: Context<HttpEnv>, id: string, path: string): boolean =>
+  UUID.test(id) && id === id.toLowerCase() && new URL(c.req.url).pathname === path;
 
 // Once per instance (isolate or process), not per request.
 let coldStartRecorded = false;
@@ -462,10 +463,12 @@ export function createApp(
       .set({ status: 'deleted', deletedAt: now, lastActivityAt: now })
       .where(and(eq(files.id, id), eq(files.userId, c.get('principal').userId), isNull(files.deletedAt)))
       .returning({ id: files.id });
-    if (deleted.length === 0) throw new NotFoundError('File not found');
+    const [row] = deleted;
+    if (!row) throw new NotFoundError('File not found');
     // D100: best effort here, because a retry of DELETE would answer 404. The delete_file job purges again and
     // is retried by the queue, so a failure here is not final.
-    await purger?.purge(publicPaths(id)).catch((error) => {
+    // The row's id, not the path's: an uppercase id matches the row, but the cached copies are under the lowercase one.
+    await purger?.purge(publicPaths(row.id)).catch((error) => {
       telemetry.logger.warn('cdn purge failed, the delete_file job retries it', { fileId: id, error });
     });
     return c.body(null, 204);
@@ -544,7 +547,8 @@ export function createApp(
     const { purger, telemetry } = c.get('deps');
     const { id } = c.req.valid('param');
     if (!purger) throw new NotImplementedError('This deployment has no CDN purger');
-    await purger.purge(publicPaths(id)).catch((error) => {
+    // Cached copies live under the canonical lowercase id (D100), whatever spelling the admin sent.
+    await purger.purge(publicPaths(id.toLowerCase())).catch((error) => {
       telemetry.logger.error('cdn purge failed', { fileId: id, error });
       throw new ServiceUnavailableError('The CDN could not be purged; retry');
     });
@@ -600,7 +604,7 @@ export function createApp(
     const size = Number(MEDIA_FILE.exec(file)?.[1]);
     // `0128.webp` would otherwise be a second immutable URL for the same object.
     if (
-      !hasCanonicalId(c as Context<HttpEnv>, id) ||
+      !isCanonical(c as Context<HttpEnv>, id, `/media/${id}/${size}.webp`) ||
       file !== `${size}.webp` ||
       !(VARIANT_SIZES as readonly number[]).includes(size)
     ) {
@@ -632,7 +636,7 @@ export function createApp(
     const { db, config, telemetry } = c.get('deps');
     const rum = rumAttributes(config);
     const id = c.req.param('id');
-    if (!hasCanonicalId(c as Context<HttpEnv>, id)) return pageError(404, renderNotFound(rum));
+    if (!isCanonical(c as Context<HttpEnv>, id, `/f/${id}`)) return pageError(404, renderNotFound(rum));
     const [row] = await withSpan(telemetry.tracer, 'db.select_public_file', () =>
       db
         .select({

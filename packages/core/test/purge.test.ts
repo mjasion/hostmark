@@ -84,6 +84,14 @@ describe.skipIf(!databaseUrl)('CDN purge on unpublish and delete', () => {
     expect((await h.row(id)).purgedAt).not.toBeNull();
   });
 
+  it('purges the canonical paths when DELETE names the file with an uppercase id', async () => {
+    const id = await h.upload(KEYS.alice, fakeImage());
+    expect(
+      (await h.request(`/api/files/${id.toUpperCase()}`, { method: 'DELETE', key: KEYS.alice })).status,
+    ).toBe(204);
+    expect(purger.calls).toEqual([publicPaths(id)]);
+  });
+
   it('keeps the object when the job cannot purge, so the queue retries before anything is removed', async () => {
     const id = await h.upload(KEYS.alice, fakeImage());
     await h.request(`/api/files/${id}`, { method: 'DELETE', key: KEYS.alice });
@@ -100,6 +108,9 @@ describe.skipIf(!databaseUrl)('CDN purge on unpublish and delete', () => {
       const id = crypto.randomUUID();
       expect((await purge(id, KEYS.admin)).status).toBe(204);
       expect(purger.calls).toEqual([publicPaths(id)]);
+      // The cached copies are under the lowercase id, whatever spelling the request used.
+      expect((await purge(id.toUpperCase(), KEYS.admin)).status).toBe(204);
+      expect(purger.calls).toEqual([publicPaths(id), publicPaths(id)]);
     });
 
     it('refuses any other key without purging', async () => {
@@ -132,6 +143,19 @@ describe.skipIf(!databaseUrl)('CDN purge on unpublish and delete', () => {
     for (const alias of [upper, encodedFirst]) {
       expect((await h.request(`/media/${alias}/128.webp`)).status, `/media/${alias}`).toBe(404);
       expect((await h.request(`/f/${alias}`)).status, `/f/${alias}`).toBe(404);
+    }
+    // D332: a percent-encoded spelling of the file name or of the route prefix is an alias too.
+    for (const alias of [
+      `/media/${id}/%31%32%38.webp`,
+      `/media/${id}/128%2Ewebp`,
+      `/media/${id}/128%2ewebp`,
+      `/media/${id}/128.%77ebp`,
+      `/%6dedia/${id}/128.webp`,
+      `/%66/${id}`,
+    ]) {
+      const res = await h.request(alias);
+      expect(res.status, alias).toBe(404);
+      expect(res.headers.get('cache-control'), alias).toMatch(/no-store/);
     }
   });
 });

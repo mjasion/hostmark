@@ -124,6 +124,20 @@ Last full gate, same session, on the last commit of the pull request, with every
       1.20261103.1 (D248).
     - N. Rollback and old-version cache entries are untested.
 
+12. Security audit of 2026-11-05 (Cloudflare `security-audit` skill, standard profile, source `6d9e829`; the report
+    is in the pull request of that day). Fixed: D332 to D335 here, D331 on the security-headers branch. Open leads
+    that need an owner-side fact, without severity:
+    - Purges for files that were never public (PATCH `isPublic:false`, DELETE, `delete_file`) let one user use up the
+      account-wide purge budget others need (D100 gap E); fix with the `purge_pending` marker planned there.
+    - No per-user cap on SSE streams: one user can hold the API's request concurrency with 60 s streams on a
+      `pending_upload` file (AWS reserved concurrency 100, Cloud Run 10 x 80).
+    - The Node and GCP workers have no per-job CPU bound; a synchronous decode longer than the 60 s lock lets the
+      lease lapse and both workers take the same job. Needs the worst decode time of the bundled codec on an in-cap
+      input (D97, D159, D188).
+    - Not covered by the audit (budget): the reach of the Neon preview key into the production branch, the
+      `cleanupExpired` re-enqueue order under failing purges, and what each platform does to rows another platform
+      created in the shared database.
+
 Minor:
 
 - The CLAUDE.md note that the smoke test needs `BUILDX_CONFIG` predates D132; it may be stale.

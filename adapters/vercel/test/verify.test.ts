@@ -82,6 +82,41 @@ describe('verifyPushedDeliveries', () => {
     expect(t.route).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a structured (v1beta) or untyped delivery, which names its topic in the body (D334)', async () => {
+    const t = setup(async () => ({ success: true }));
+    const body = JSON.stringify({
+      type: 'com.vercel.queue.v1beta',
+      source: 'x',
+      id: 'e1',
+      data: { queueName: 'image-jobs-dlq', consumerGroup: 'audit', messageId: 'msg-1' },
+    });
+    const structured = (headers: Record<string, string>) =>
+      new Request('https://hm.example/api/queue', { method: 'POST', headers, body });
+    const variants: Record<string, string>[] = [
+      { 'ce-type': 'com.vercel.queue.v1beta', 'content-type': 'application/cloudevents+json' },
+      { 'content-type': 'application/cloudevents+json' },
+    ];
+    for (const headers of variants) {
+      expect((await t.post(structured(headers))).status).toBe(403);
+    }
+    expect((await t.post(pushed({ 'ce-vqsqueuename': null }))).status).toBe(403);
+    expect(t.api.changeVisibility).not.toHaveBeenCalled();
+    expect(t.route).not.toHaveBeenCalled();
+  });
+
+  it('refuses dot-segment identifiers, which would send the lease call to another resource (D334)', async () => {
+    const t = setup(async () => ({ success: true }));
+    for (const header of ['ce-vqsreceipthandle', 'ce-vqsconsumergroup', 'ce-vqsmessageid']) {
+      for (const value of ['.', '..']) {
+        expect((await t.post(pushed({ [header]: value }))).status).toBe(403);
+        if (header !== 'ce-vqsreceipthandle')
+          expect((await t.post(pushed({ [header]: value, 'ce-vqsreceipthandle': null }))).status).toBe(403);
+      }
+    }
+    expect(t.api.changeVisibility).not.toHaveBeenCalled();
+    expect(t.route).not.toHaveBeenCalled();
+  });
+
   it('ignores a region the SDK would refuse', async () => {
     const t = setup(async () => ({ success: true }));
     await t.post(pushed({ 'ce-vqsregion': 'evil.example.com/' }));

@@ -18,7 +18,8 @@ export const varsSchema = z.object({
   PUBLIC_URL: httpUrl,
   BETTER_AUTH_SECRET: z.string().trim().min(32, 'must be at least 32 characters (spaces do not count)'),
   AUTH_TRUSTED_ORIGINS: z.string().default(''),
-  AUTH_SIGNUP_ENABLED: z.enum(['true', 'false']).default('true'),
+  // D7, D335: signup is off unless the deployment turns it on (a run with scenario S13 does).
+  AUTH_SIGNUP_ENABLED: z.enum(['true', 'false']).default('false'),
   HOSTMARK_TOPOLOGY: z.string().optional(),
   HOSTMARK_REGION: z.string().optional(),
   /** Cloudflare account id: the host of presigned R2 URLs is `<id>.r2.cloudflarestorage.com`. */

@@ -165,7 +165,7 @@ services:
       PORT: "8080"
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?}
       PUBLIC_URL: ${PUBLIC_URL:?}
-      AUTH_SIGNUP_ENABLED: ${AUTH_SIGNUP_ENABLED:-true}
+      AUTH_SIGNUP_ENABLED: ${AUTH_SIGNUP_ENABLED:-false}
       HOSTMARK_TOPOLOGY: ${HOSTMARK_TOPOLOGY:-single}
       HOSTMARK_REGION: ${HOSTMARK_REGION:-frankfurt}
     # No ports: only Caddy reaches the api, so X-Client-Ip always comes from Caddy.

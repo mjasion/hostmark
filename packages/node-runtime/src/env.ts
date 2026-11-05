@@ -40,7 +40,8 @@ export const envSchema = z.object({
   AUTH_TRUSTED_ORIGINS: z.string().default(''),
   /** Header a trusted proxy overwrites with the client address. Set: the sign-in rate limiter is on and /api/auth/* answers 400 without one valid address in it. Unset: no limiter. */
   AUTH_CLIENT_IP_HEADER: z.string().trim().optional(),
-  AUTH_SIGNUP_ENABLED: z.enum(['true', 'false']).default('true'),
+  // D7, D335: signup is off unless the deployment turns it on (a run with scenario S13 does).
+  AUTH_SIGNUP_ENABLED: z.enum(['true', 'false']).default('false'),
   /** Overrides of the RUM attributes of rendered pages; closed lists in packages/contract. */
   HOSTMARK_TOPOLOGY: z.string().optional(),
   HOSTMARK_REGION: z.string().optional(),

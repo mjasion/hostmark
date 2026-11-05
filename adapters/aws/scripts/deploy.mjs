@@ -131,6 +131,8 @@ const OPTIONAL = [
   ['AcmCertificateArn', 'AWS_ACM_CERTIFICATE_ARN'],
   ['AlarmTopicArn', 'AWS_ALARM_TOPIC_ARN'],
   ['ApiReservedConcurrency', 'AWS_API_RESERVED_CONCURRENCY'],
+  // D335: `false` by default (the template); `true` for a run that includes S13.
+  ['AuthSignupEnabled', 'AUTH_SIGNUP_ENABLED'],
 ];
 
 async function deploy(extra) {
