@@ -14,7 +14,7 @@
     "APP_VERSION": "dev",
     "PUBLIC_URL": "https://hostmark.example.com",
     "AUTH_TRUSTED_ORIGINS": "",
-    "AUTH_SIGNUP_ENABLED": "true",
+    "AUTH_SIGNUP_ENABLED": "false",
     "HOSTMARK_TOPOLOGY": "multi",
     "R2_ACCOUNT_ID": "REPLACE_WITH_ACCOUNT_ID",
     "R2_BUCKET_NAME": "hostmark-files"

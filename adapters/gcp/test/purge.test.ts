@@ -1,5 +1,6 @@
 import { publicPaths } from '@hostmark/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { platform } from '../src/platform';
 import { createCloudCdnPurger, invalidationPaths, metadataTokenProvider } from '../src/purge';
 
 const ID = '0d0e0c6e-1111-4222-8333-444455556666';
@@ -33,6 +34,25 @@ describe('invalidation paths', () => {
 });
 
 describe('Cloud CDN purger (D100)', () => {
+  it('is built without a host on the deployment, so copies cached under any Host are invalidated (D333)', async () => {
+    const bodies: unknown[] = [];
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      if (String(url).startsWith('http://metadata.google.internal/'))
+        return Response.json({ access_token: 't', expires_in: 3600 });
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({ name: 'operation-1' });
+    });
+    try {
+      const env = { GCP_PROJECT: 'p1', CDN_URL_MAP: 'hostmark', PUBLIC_URL: 'https://bench.example.test' };
+      const purger = platform.purger?.(env as Parameters<NonNullable<typeof platform.purger>>[0]);
+      await purger?.purge(publicPaths(ID));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(bodies).toHaveLength(2);
+    for (const body of bodies) expect(body).not.toHaveProperty('host');
+  });
+
   it('invalidates every public path of a file on the URL map in two calls', async () => {
     const { calls, fetchFn } = recorder();
     const purger = createCloudCdnPurger({

@@ -30,7 +30,7 @@ set them on **all three** Workers.
 | `ENVIRONMENT`                                   | var    | `production` (default when missing). `local` switches off the checks below and is refused in a deployable config by `pnpm check` |
 | `PUBLIC_URL`                                    | var    | Origin of the deployment, also the auth base URL                                                                                 |
 | `AUTH_TRUSTED_ORIGINS`                          | var    | Comma separated, optional                                                                                                        |
-| `AUTH_SIGNUP_ENABLED`                           | var    | `true` or `false`                                                                                                                |
+| `AUTH_SIGNUP_ENABLED`                           | var    | `false` by default (D7, D335); `true` for a run that includes S13                                                                |
 | `HOSTMARK_TOPOLOGY`, `HOSTMARK_REGION`          | var    | Optional, for the RUM attributes (D85)                                                                                           |
 | `R2_ACCOUNT_ID`                                 | var    | Account id; the host of presigned URLs is `<id>.r2.cloudflarestorage.com`                                                        |
 | `R2_BUCKET_NAME`                                | var    | Must equal the bucket of the `BUCKET` binding (`pnpm check` compares them)                                                       |

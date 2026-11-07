@@ -93,7 +93,7 @@ layers are not pruned (`docker builder prune` is left to the owner).
 | `SEED_API_KEY`, `SEED_ADMIN_API_KEY`                             | Seed keys (D14)                                                   |
 | `BETTER_AUTH_SECRET`                                             | 32+ characters, signs session cookies (D80)                       |
 | `VPS_HOST`, `VPS_SSH_USER`, `VPS_SSH_KEY`, `VPS_SSH_KNOWN_HOSTS` | Pipeline secrets, not in `.env`: see "Deploy from GitHub Actions" |
-| `OTLP_ENDPOINT`, `AUTH_SIGNUP_ENABLED`                           | Optional                                                          |
+| `OTLP_ENDPOINT`, `AUTH_SIGNUP_ENABLED`                           | Optional; signup is `false` by default (D7, D335), `true` for S13 |
 | `WORKER_REPLICAS` (2), `WORKER_MEM_LIMIT` (`4g`), `APP_VERSION`  | Worker processes, memory per process, build stamp                 |
 
 `WORKER_CONCURRENCY` is fixed at 1 in the compose file (D97). Nothing in `.env.example` is a secret, and the

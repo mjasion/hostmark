@@ -17,13 +17,9 @@ export const platform: NodePlatform<GcpEnv, PubSubQueueHandle> & {
   env: (source) => ({ ...source, AUTH_CLIENT_IP_HEADER: CLIENT_IP_HEADER }),
   // Pub/Sub instead of BullMQ (D180).
   queue: (env, logger) => createPubSubQueue({ project: env.GCP_PROJECT, topic: env.PUBSUB_TOPIC, logger }),
-  // D100: every process that unpublishes or deletes purges; only a deployment without a CDN has none.
+  // D100: every process that unpublishes or deletes purges; only a deployment without a CDN has none. No `host`: the
+  // cache key includes the request Host and the URL map sends every Host to the CDN backend, so an invalidation scoped
+  // to PUBLIC_URL's host would leave copies cached under another Host (D333).
   purger: (env) =>
-    env.CDN_URL_MAP
-      ? createCloudCdnPurger({
-          project: env.GCP_PROJECT,
-          urlMap: env.CDN_URL_MAP,
-          host: env.PUBLIC_URL ? new URL(env.PUBLIC_URL).host : undefined,
-        })
-      : undefined,
+    env.CDN_URL_MAP ? createCloudCdnPurger({ project: env.GCP_PROJECT, urlMap: env.CDN_URL_MAP }) : undefined,
 };

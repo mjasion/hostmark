@@ -23,6 +23,8 @@ const bindings = {
 describe('parseVars', () => {
   it('defaults ENVIRONMENT to production, so a forgotten variable keeps the checks on', () => {
     expect(parseVars(vars).ENVIRONMENT).toBe('production');
+    // D7, D335: and signup stays off unless the deployment turns it on.
+    expect(parseVars(vars).AUTH_SIGNUP_ENABLED).toBe('false');
   });
 
   it('refuses the .env.example BETTER_AUTH_SECRET unless ENVIRONMENT is local', () => {

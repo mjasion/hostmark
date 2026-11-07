@@ -20,7 +20,7 @@ kill_timeout = 70
 [env]
   ENVIRONMENT = "production"
   WORKER_CONCURRENCY = "1"
-  AUTH_SIGNUP_ENABLED = "true"
+  AUTH_SIGNUP_ENABLED = "false"
   HOSTMARK_TOPOLOGY = "single"
   HOSTMARK_REGION = "frankfurt"
 

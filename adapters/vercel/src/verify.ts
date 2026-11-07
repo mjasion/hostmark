@@ -62,9 +62,18 @@ export interface VerifyOptions {
 }
 
 /**
- * Wraps a queue route. A binary mode delivery with a receipt handle (its payload in the body) runs only after the
- * service accepted the receipt handle; a delivery without one is fetched from the service by id by the SDK, under the
- * deployment's OIDC token, and passes through. A delivery for another topic is refused.
+ * A value the SDK puts into a URL path segment. `encodeURIComponent` keeps `.` and `..`, which `fetch` then removes as
+ * dot segments, so a lease call for `consumer/../lease/..` would address another resource of the queue service
+ * (D334). Anything else is encoded into a single segment by the SDK.
+ */
+const isPathSegment = (value: string): boolean => value !== '.' && value !== '..' && value.length <= 1024;
+
+/**
+ * Wraps a queue route. Only a binary mode v2beta delivery for this route's topic is accepted, the only kind the
+ * `queue/v2beta` trigger in vercel.json sends: a structured (v1beta) callback names its topic in the body, which the
+ * topic check would not see (D334). With a receipt handle (its payload in the body), it runs only after the service
+ * accepted the receipt handle; without one, the SDK fetches the message by id under the deployment's OIDC token. The
+ * identifiers must each be a single path segment.
  */
 export function verifyPushedDeliveries(
   route: (request: Request) => Promise<Response>,
@@ -74,16 +83,23 @@ export function verifyPushedDeliveries(
   return async (request) => {
     const h = request.headers;
     const queueName = h.get('ce-vqsqueuename');
-    if (queueName !== null && queueName !== opts.topic()) {
+    if (h.get('ce-type') !== CLOUD_EVENT_TYPE_V2BETA || queueName === null) {
+      log('queue delivery that is not a binary v2beta delivery refused', { type: h.get('ce-type') });
+      return Response.json({ error: 'unsupported delivery' }, { status: 403 });
+    }
+    if (queueName !== opts.topic()) {
       log('queue delivery for another topic refused', { queueName });
       return Response.json({ error: 'unknown topic' }, { status: 403 });
     }
-    const receiptHandle = h.get('ce-vqsreceipthandle');
-    if (h.get('ce-type') !== CLOUD_EVENT_TYPE_V2BETA || !receiptHandle) return route(request);
-
     const messageId = h.get('ce-vqsmessageid');
     const consumerGroup = h.get('ce-vqsconsumergroup');
-    if (!messageId || !consumerGroup || queueName === null) return route(request); // the SDK answers 400
+    const receiptHandle = h.get('ce-vqsreceipthandle');
+    if ([messageId, consumerGroup, receiptHandle].some((v) => v !== null && !isPathSegment(v))) {
+      log('queue delivery with an identifier that is not a path segment refused', { messageId });
+      return Response.json({ error: 'invalid delivery' }, { status: 403 });
+    }
+    if (!receiptHandle) return route(request);
+    if (!messageId || !consumerGroup) return route(request); // the SDK answers 400
     const region = h.get('ce-vqsregion');
     let api = opts.api();
     // The SDK accepts only region names of this shape before it uses one in a host name; so does this.

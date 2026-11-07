@@ -13,6 +13,13 @@ const base = {
 const parse = (extra: Record<string, string>) => envSchema.safeParse({ ...base, ...extra });
 
 describe('auth environment', () => {
+  it('keeps signup off unless the deployment turns it on (D7, D335)', () => {
+    const off = parse({});
+    expect(off.success && off.data.AUTH_SIGNUP_ENABLED).toBe('false');
+    const on = parse({ AUTH_SIGNUP_ENABLED: 'true' });
+    expect(on.success && on.data.AUTH_SIGNUP_ENABLED).toBe('true');
+  });
+
   it('accepts http and https public URLs, with or without a path (only the origin is used)', () => {
     for (const url of ['http://127.0.0.1:58080', 'https://hostmark.example/', 'http://h.test/app?x=1#f'])
       expect(parse({ PUBLIC_URL: url }).success, url).toBe(true);

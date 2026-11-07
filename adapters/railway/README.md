@@ -114,7 +114,7 @@ deployments made by `railway up`; build and deploy times.
 | `BETTER_AUTH_SECRET`, `PUBLIC_URL`                                     | `api`              | 32+ characters; the public origin                           |
 | `SEED_API_KEY`, `SEED_ADMIN_API_KEY`                                   | `api` (pre-deploy) | seed keys (D14)                                             |
 | `WORKER_CONCURRENCY`                                                   | `worker`           | `1` (D97; also the default)                                 |
-| `OTLP_ENDPOINT`, `AUTH_SIGNUP_ENABLED`                                 | optional           |                                                             |
+| `OTLP_ENDPOINT`, `AUTH_SIGNUP_ENABLED`                                 | optional           | signup `false` by default (D7, D335); `true` for S13        |
 | `HOSTMARK_REGION` (build variable)                                     | all                | RUM region; defaults to `unknown`, see below                |
 | `APP_VERSION`                                                          | all                | set by the deploy script (D281); by hand: the commit        |
 | `RAILWAY_DOCKERFILE_PATH`                                              | all                | `adapters/railway/Dockerfile`, set by the deploy script     |
