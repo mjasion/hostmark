@@ -103,7 +103,10 @@ Parameters:
       the account limit must be at least this plus 100.
   AuthSignupEnabled:
     Type: String
-    Default: "true"
+    Description: >-
+      D7, D335: signup stays off on a deployment unless a run needs it; scenario S13 signs up, so a run that includes it
+      deploys with AUTH_SIGNUP_ENABLED=true.
+    Default: "false"
     AllowedValues: ["true", "false"]
   PriceClass:
     Type: String

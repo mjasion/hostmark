@@ -698,3 +698,48 @@ the same image. Browser scenarios S10 and S13 use Playwright.
 - Owner decision, Cloudflare portable variant: only the `jpeg-tiny` fixture passes (D103), so S4, S5, S9, S12, S13 and S15 do not pass there and acceptance criterion 4 is not met by this variant. Options: accept it and report the variant as not comparable on those scenarios, give it a different image path (not a larger limit), or add a per-platform fixture override. None is done; fixtures are not shrunk.
 
 **D331. The pnpm-upgrade patch filter checks what the patch stages, not `--numstat`.** A security audit (2026-11-05) found that the `pr` job's allowlist of D330 read only the third column of `git apply --numstat`, which for a rename or copy is the new path: a patch renaming any tracked file onto an allowlisted path (a new `packages/<x>/package.json`, or an existing manifest that the same patch deletes first) passed the filter, and `git commit -am` then committed the deletion of the renamed file with the write token. The update job runs freshly bumped dependency code, so the patch is lower-trust input. The step now runs `git apply --index` and checks every path of `git diff --cached --name-only --no-renames` (both sides of a rename or copy) against the same allowlist, and the commit is `git commit -m` of the index only, so a new file outside the patch's staged set never rides along. `tools/deps/upgrade-patch.test.mjs` runs the step verbatim against throwaway repositories: a manifest bump is applied and committed alone; a rename onto a new manifest path, a delete-and-rename onto an existing manifest, a plain deletion and a new `.npmrc` are refused.
+
+**D332. `/media` and `/f` are served only under their whole canonical raw path.** A security audit (2026-11-05) found
+that D100's canonical-path rule covered the id segment only: `/media/<id>/%31%32%38.webp`, `/media/<id>/128%2Ewebp` or
+`/media/<id>/128.%77ebp` reached the same variant with the year-long immutable `Cache-Control`, because Hono decodes the
+file parameter before `file !== ${size}.webp` runs. Unpublish, delete, `delete_file` and the admin purge purge
+only `publicPaths`, so on a CDN that keys the raw path and purges by exact path or prefix (CloudFront, Workers Caching)
+such an alias could outlive the purge. Whether CloudFront or Cloudflare normalise these encodings before keying is not
+known from source. The handlers now require `new URL(url).pathname` to equal exactly the path `publicPaths` writes
+(`/media/<id>/<size>.webp`, `/f/<id>`), so every other spelling, an encoded route prefix included, answers 404 with
+`no-store`. DELETE purges the row's id and the admin purge the lowercase id, so a request that names the file in
+uppercase still purges the cached copies. `packages/core/test/purge.test.ts` covers the aliases and the uppercase ids.
+
+**D333. The GCP purger invalidates every host of the URL map.** The Cloud CDN cache key includes the request Host
+(`include_host = true`) and the URL map sends every Host to the CDN backend, but the purger was scoped to the
+`PUBLIC_URL` host, so a copy fetched through the load balancer with another Host header survived unpublish and delete
+for up to Cloud CDN's 30-day cap (D224). The platform now builds the purger without `host`; `invalidateCache` without a
+host covers all hosts of the URL map. `adapters/gcp/test/purge.test.ts` checks the bodies the deployed purger sends.
+Restricting the URL map to the domain (a host rule, with other hosts sent to a non-CDN backend) would also close it and
+is left to the owner.
+
+**D334. The Vercel queue route accepts only binary v2beta deliveries with single-segment identifiers.** D235's topic
+check read only the `ce-vqsqueuename` header and passed any other `ce-type` to the SDK. A structured (v1beta)
+CloudEvent names its topic, consumer group and message id in the body, so a forged POST could make the SDK receive by
+id, run the job handler and acknowledge a message of another topic of the project (for example `image-jobs-dlq`)
+under the deployment's OIDC token, if the service allows that and the caller knows a message id. Separately, the SDK
+puts the consumer group, message id and receipt handle into URL paths with `encodeURIComponent`, which keeps `.` and
+`..`; `fetch` then removes them as dot segments, so the lease check could address the topic or consumer-group resource
+instead of the delivery's lease, and its success would no longer prove the delivery is real. Neither effect could be
+observed against the real service. `verifyPushedDeliveries` now refuses (403) a request that is not `ce-type`
+`com.vercel.queue.v2beta` with `ce-vqsqueuename`, which `vercel.json`'s `queue/v2beta` trigger always sends, and any of
+the three identifiers equal to `.` or `..` (or longer than 1024 characters), before the service or the route is
+called. A request without CloudEvent headers now answers 403 instead of the SDK's 400.
+`adapters/vercel/test/verify.test.ts` covers both forms.
+
+**D335. Signup is off by default on every deployed adapter (D7).** D7 says a deployed environment keeps
+`AUTH_SIGNUP_ENABLED` off unless a run needs it, and D291 did that for GCP only. The AWS, Vercel and Cloudflare
+schemas and the Node runtime (VPS, Fly, Railway) still defaulted an unset variable to `true`, and the committed
+configs set `true`: the AWS template default (which the deploy script could not change), the three wrangler configs,
+`fly.toml`, the VPS compose fallback and the VPS `.env.example`. An audit confirmed that a deployment from those configs
+accepts anonymous signup, and with no upload quota that makes it a free image host (D7). Every schema now defaults to
+`false`, the committed configs say `false`, and the AWS deploy script passes `AUTH_SIGNUP_ENABLED` as
+`AuthSignupEnabled` when set. Only the local adapter keeps `true` (its compose file and `.env.example` set it). A run
+that includes S13, which signs up, sets `AUTH_SIGNUP_ENABLED=true` for that deployment (for Cloudflare and Fly, in the
+config the deploy uses) and turns it off afterwards. The env tests of the Node runtime, AWS, Vercel and Cloudflare pin
+the default.

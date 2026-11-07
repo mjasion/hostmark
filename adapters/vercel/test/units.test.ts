@@ -54,6 +54,8 @@ describe('env', () => {
     const vars = parseVars(base);
     expect(vars.S3_REGION).toBe('auto');
     expect(vars.QUEUE_TOPIC).toBe('image-jobs');
+    // D7, D335: signup stays off unless the deployment turns it on.
+    expect(vars.AUTH_SIGNUP_ENABLED).toBe('false');
   });
   it('lists every invalid field', () => {
     const { CRON_SECRET, S3_BUCKET, ...rest } = base;

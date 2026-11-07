@@ -31,7 +31,8 @@ Scheduler). `release_command` runs the bucket setup (lifecycle), the migrations 
 temporary machine before the machines are replaced. `APP_VERSION` becomes `x-version` and `service.version`; without
 it every deploy reports `dev` (S14). The deploy strategy is `bluegreen` (D282): a new machine starts beside each old
 one and traffic moves once the new api machine passes `/api/health`, so the one api machine is replaced without a
-gap. Optional: `OTLP_ENDPOINT` and `AUTH_SIGNUP_ENABLED`.
+gap. Optional: `OTLP_ENDPOINT` and `AUTH_SIGNUP_ENABLED` (`false` in fly.toml, D7, D335; a run that includes S13
+sets it to `true`).
 
 ## Deploy from GitHub Actions
 

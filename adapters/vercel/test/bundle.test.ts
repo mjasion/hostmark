@@ -84,7 +84,8 @@ describe('bundled functions under plain Node', () => {
   });
 
   it('runs the queue consumer: dead-letters a delivery after the last attempt, then acknowledges', () => {
-    expect(report.queueMalformed).toBe(400);
+    // A request that is not a binary v2beta delivery is refused before the SDK sees it (D334).
+    expect(report.queueMalformed).toBe(403);
     expect(report.queueDelivery.status).toBe(200);
     expect(report.queueDelivery.body).toEqual({ status: 'success' });
     const [lease, dlq, ack, ...rest] = report.queueDelivery.outgoing;
