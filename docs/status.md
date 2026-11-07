@@ -130,10 +130,8 @@ Last full gate, same session, on 46af7fe (the last commit of the pull request), 
 12. Cloudflare does not meet acceptance criterion 3: Cloudflare's automatic traces are on, but the app's spans are
     not exported from Workers, so there is no single trace from `complete` to `process_image` (D254). AWS (D261),
     GCP (D290) and Vercel (D274) export OTLP when an endpoint is set; none of them has run on a platform.
-
 13. Security audit of 2026-11-05 (Cloudflare `security-audit` skill, standard profile, source `6d9e829`; the report
-    is in the pull request of that day). Fixed: D332 to D335 here, D331 in PR #13. Open leads
-    that need an owner-side fact, without severity:
+    is in pull request #20). Fixed: D331 to D335. Open leads that need an owner-side fact, without severity:
     - Purges for files that were never public (PATCH `isPublic:false`, DELETE, `delete_file`) let one user use up the
       account-wide purge budget others need (D100 gap E); fix with the `purge_pending` marker planned there.
     - No per-user cap on SSE streams: one user can hold the API's request concurrency with 60 s streams on a
