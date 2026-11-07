@@ -1,0 +1,225 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: ['local>mjasion/renovate-base', 'schedule:monthly'],
+  // Supply-chain: don't touch a release until it's aged 24h, matching pnpm's
+  // default minimumReleaseAge gate (pnpm-workspace.yaml) so Renovate never proposes
+  // a version CI would reject as too fresh. `internalChecksFilter: strict` is the
+  // important part: it makes the age gate apply to in-range lockfile bumps too, not
+  // just the package Renovate explicitly upgrades — that gap is how recharts@3.9.2
+  // (an in-range 3.9.1→3.9.2 bump during another update) slipped past the gate.
+  minimumReleaseAge: '1 day',
+  internalChecksFilter: 'strict',
+  vulnerabilityAlerts: {
+    enabled: true,
+    schedule: 'at any time',
+    automerge: true,
+    labels: ['security', 'renovate'],
+  },
+  packageRules: [
+    {
+      description: 'Group ESLint ecosystem updates into one PR',
+      groupName: 'eslint',
+      matchPackageNames: [
+        'eslint',
+        '@eslint/js',
+        'typescript-eslint',
+        'eslint-plugin-react',
+        'eslint-plugin-react-hooks',
+      ],
+    },
+    {
+      // @cloudflare/vite-plugin raises its `wrangler` peer floor in EVERY patch
+      // release (1.54.1 wants ^4.127.0, 1.54.4 wants ^4.129.0), and it hard-throws
+      // `assertWranglerVersion` at vite config load. So a patch-only bump of the
+      // plugin without a matching wrangler MINOR bump breaks `pnpm build` — which is
+      // exactly how main went red on 2026-09-20. Keep the runtime + its tooling in
+      // one PR so the peer can never go unsatisfiable.
+      description: 'Group the Cloudflare toolchain so wrangler and its peers move together',
+      groupName: 'cloudflare',
+      matchPackageNames: [
+        'wrangler',
+        '@cloudflare/vite-plugin',
+        '@cloudflare/workers-types',
+        'miniflare',
+        'workerd',
+      ],
+    },
+    {
+      description: 'Security updates - high priority',
+      matchDatasources: ['npm'],
+      isVulnerabilityAlert: true,
+      prPriority: 10,
+    },
+
+    // ---- Repository groups (D328). Minor and patch npm bumps also arrive weekly through
+    // .github/workflows/pnpm-upgrade.yml (D330); these groups keep Renovate's own PRs
+    // (majors, digests, Docker, Actions, Terraform, and anything it proposes first) to one
+    // PR per family that has to move together.
+    {
+      // SDK 0.x and the 1.x/3.x packages are released together and pin each other exactly.
+      description: 'Group OpenTelemetry packages: the SDK, exporters and API are released together',
+      groupName: 'opentelemetry',
+      matchPackageNames: ['@opentelemetry/**'],
+    },
+    {
+      // Every client of the monorepo shares @smithy/* and @aws-sdk/core versions.
+      description: 'Group the AWS SDK v3 clients',
+      groupName: 'aws-sdk',
+      matchPackageNames: ['@aws-sdk/**'],
+    },
+    {
+      // @hono/node-server and @hono/zod-openapi declare hono as a peer.
+      description: 'Group Hono and its middleware packages',
+      groupName: 'hono',
+      matchPackageNames: ['hono', '@hono/**'],
+    },
+    {
+      // The codecs ship wasm that @hostmark/image loads and partly vendors (D30); test them together.
+      description: 'Group the jSquash codecs',
+      groupName: 'jsquash',
+      matchPackageNames: ['@jsquash/**'],
+    },
+    {
+      // drizzle-kit reads the schema written for drizzle-orm; mismatched pairs refuse to run.
+      description: 'Group drizzle-orm and drizzle-kit',
+      groupName: 'drizzle',
+      matchPackageNames: ['drizzle-orm', 'drizzle-kit'],
+    },
+    {
+      // Only the Vercel adapter uses them; one PR runs its bundle probe and `pnpm check` once.
+      description: 'Group the Vercel packages',
+      groupName: 'vercel',
+      matchPackageNames: ['@vercel/**'],
+    },
+    {
+      // react-query and react-router share @tanstack/* internals in the panel.
+      description: 'Group the TanStack packages of the panel',
+      groupName: 'tanstack',
+      matchPackageNames: ['@tanstack/**'],
+    },
+    {
+      // The type packages follow the runtime; a split bump fails typecheck.
+      description: 'Group React, React DOM and their types',
+      groupName: 'react',
+      matchPackageNames: ['react', 'react-dom', '@types/react', '@types/react-dom'],
+    },
+    {
+      // vitest declares vite as a dependency and @vitejs/plugin-react a vite peer.
+      description: 'Group Vitest, Vite and the Vite plugins',
+      groupName: 'vite',
+      matchPackageNames: ['vitest', '@vitest/**', 'vite', '@vitejs/**'],
+    },
+    {
+      // The e2e and load docs run Playwright in mcr.microsoft.com/playwright:v<version>-noble, which
+      // must equal @playwright/test; the custom manager below moves those pins with the package.
+      description: 'Move @playwright/test and its Docker image pins together',
+      groupName: 'playwright',
+      matchPackageNames: ['@playwright/test'],
+    },
+    {
+      // packageManager in package.json and the pnpm@<version> pins of the workflows, Dockerfiles,
+      // vercel.json installCommand (D273) and the checks that assert them (custom manager below).
+      description: 'Move every pnpm pin with packageManager',
+      groupName: 'pnpm',
+      matchPackageNames: ['pnpm'],
+    },
+    {
+      // Actions stay pinned to a commit SHA with the tag in a comment.
+      description: 'Group all GitHub Actions updates and keep them pinned by digest',
+      groupName: 'github-actions',
+      matchManagers: ['github-actions'],
+      pinDigests: true,
+    },
+    {
+      // The stand-ins of adapters/local and adapters/vps; majors are separate (below).
+      description: 'Group minor, patch and digest updates of the Docker stand-in images',
+      groupName: 'docker stand-ins',
+      matchDatasources: ['docker'],
+      matchPackageNames: [
+        'postgres',
+        'redis',
+        'caddy',
+        'cgr.dev/chainguard/minio',
+        'grafana/otel-lgtm',
+      ],
+      matchUpdateTypes: ['minor', 'patch', 'digest'],
+    },
+    {
+      // adapters/gcp/infra; CI runs init, validate and fmt on the PR (D202).
+      description: 'Group the Terraform providers',
+      groupName: 'terraform providers',
+      matchDatasources: ['terraform-provider'],
+    },
+
+    // ---- Majors that wait for the owner (D324 to D327).
+    {
+      // D3, D248: Docker images, workflows and `engines` stay on Node 22; Lambda runs nodejs22.x
+      // (D269), Vercel takes `engines` 22.x (D279), and maintenance task M2 measures the move to the
+      // next LTS on its own. @types/node 26 would accept APIs Node 22 lacks.
+      description: 'Node majors (images, workflows, engines, @types/node) need dashboard approval',
+      matchPackageNames: ['node', '@types/node'],
+      matchUpdateTypes: ['major'],
+      dependencyDashboardApproval: true,
+    },
+    {
+      // D231: adapters/vercel/test/routes.test.ts must use the path-to-regexp of
+      // @vercel/routing-utils (6.3.0), so any update would make the test check the wrong matcher.
+      description: 'path-to-regexp must equal the version @vercel/routing-utils uses',
+      matchPackageNames: ['path-to-regexp'],
+      enabled: false,
+    },
+    {
+      // The local stack should match the managed databases the owner picks (Neon, Railway or
+      // Upstash Redis), and a major does not start on an existing local volume.
+      description: 'Postgres and Redis image majors need dashboard approval',
+      matchDatasources: ['docker'],
+      matchPackageNames: ['postgres', 'redis'],
+      matchUpdateTypes: ['major'],
+      dependencyDashboardApproval: true,
+    },
+    {
+      // The undici override of pnpm-workspace.yaml (D249) also forces the version into miniflare,
+      // which declares undici 7; an 8.x would run the Cloudflare tests on an unsupported client.
+      description: 'undici majors need dashboard approval',
+      matchPackageNames: ['undici'],
+      matchUpdateTypes: ['major'],
+      dependencyDashboardApproval: true,
+    },
+  ],
+  customManagers: [
+    {
+      // pnpm@<version> wherever pnpm is installed by version instead of through packageManager.
+      // pnpm-upgrade.yml uses pnpm/action-setup, which reads packageManager, so it needs no entry.
+      customType: 'regex',
+      description: 'pnpm pins that must equal packageManager',
+      managerFilePatterns: [
+        '/^\\.github/workflows/[^/]+\\.ya?ml$/',
+        '/^adapters/[^/]+/Dockerfile$/',
+        '/^adapters/vercel/vercel\\.json$/',
+        '/^adapters/vercel/scripts/check-config\\.ts$/',
+        '/^adapters/vercel/test/units\\.test\\.ts$/',
+        '/^adapters/vercel/README\\.md$/',
+        '/^adapters/local/README\\.md$/',
+        '/^CLAUDE\\.md$/',
+      ],
+      matchStrings: ['pnpm[@ ](?<currentValue>\\d+\\.\\d+\\.\\d+)'],
+      depNameTemplate: 'pnpm',
+      datasourceTemplate: 'npm',
+    },
+    {
+      // The Playwright image runs the e2e tests and the S10/S13 load scenarios; its tag follows
+      // the npm package's version.
+      customType: 'regex',
+      description: 'Playwright Docker image pins that must equal @playwright/test',
+      managerFilePatterns: [
+        '/^CLAUDE\\.md$/',
+        '/^adapters/local/README\\.md$/',
+        '/^load/README\\.md$/',
+        '/^load/run\\.mjs$/',
+      ],
+      matchStrings: ['mcr\\.microsoft\\.com/playwright:v(?<currentValue>\\d+\\.\\d+\\.\\d+)-noble'],
+      depNameTemplate: '@playwright/test',
+      datasourceTemplate: 'npm',
+    },
+  ],
+}

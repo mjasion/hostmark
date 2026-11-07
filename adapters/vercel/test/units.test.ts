@@ -365,12 +365,19 @@ describe('region and version', () => {
 });
 
 describe('cron route', () => {
-  const runtime = () => ({ deps: {} as never, vars: parseVars(base) });
+  const runtime = () => ({ deps: { config: { publicUrl: 'https://x' } } as never, vars: parseVars(base) });
   const handler = createCronHandler(runtime);
   const call = (url: string, authorization?: string) =>
     handler(new Request(url, { headers: authorization ? { authorization } : {} }));
   it('refuses a caller without the cron secret', async () => {
-    expect((await call('https://x/api/cron/daily-stats')).status).toBe(401);
+    const refused = await call('https://x/api/cron/daily-stats');
+    expect(refused.status).toBe(401);
+    // D310: the API's headers, as on every other /api answer.
+    expect(Object.fromEntries(refused.headers)).toMatchObject({
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
+      'strict-transport-security': 'max-age=31536000',
+    });
     expect((await call('https://x/api/cron/daily-stats', 'Bearer wrong')).status).toBe(401);
     expect((await call('https://x/api/cron?job=daily-stats', 'Bearer wrong')).status).toBe(401);
   });
@@ -452,7 +459,7 @@ describe('vercel.json', () => {
     const problems = checkConfig(config).join('\n');
     expect(problems).toMatch(/api\/index.js needs a maxDuration of at least 90 s/);
     expect(problems).toMatch(/api\/queue.js must set maxConcurrency 1/);
-    expect(problems).toMatch(/installCommand: must install with pnpm 12.15.0/);
+    expect(problems).toMatch(/installCommand: must install with pnpm 12.18.0/);
     expect(problems).toMatch(/headers: \/rum.js must get Cache-Control public, max-age=300/);
     expect(problems).toMatch(/headers: \/ must get/);
     expect(problems).toMatch(/rewrites: the first must send \/api\/cron\/:job/);

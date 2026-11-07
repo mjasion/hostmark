@@ -191,7 +191,7 @@ test('Cloudflare has one deployment route, cloudflare-production.yml, and deploy
 });
 
 test('no workflow expression is expanded inside a shell command, and every action is pinned to a SHA', () => {
-  for (const file of ['deploy.yml', 'ci.yml']) {
+  for (const file of ['deploy.yml', 'ci.yml', 'pnpm-upgrade.yml']) {
     const lines = workflowText(file).split('\n');
     // A `run:` line or a line of its block scalar; blocks end at the next key with less indentation.
     let inRun = null;
@@ -295,4 +295,35 @@ test('every platform that deploy.yml can reach has a platform-deploy script', ()
     const pkg = JSON.parse(readFileSync(join(repo, p.adapter, 'package.json'), 'utf8'));
     assert.ok(pkg.scripts?.['platform-deploy'], `${p.adapter} has no platform-deploy script`);
   }
+});
+
+test('pnpm-upgrade.yml: dependency code runs without write access, and the patch may touch manifests only (D330)', () => {
+  const text = workflowText('pnpm-upgrade.yml');
+  assert.match(text, /^permissions: \{\}$/m);
+  const update = text.slice(text.indexOf('\n  update:'), text.indexOf('\n  pr:'));
+  const pr = text.slice(text.indexOf('\n  pr:'));
+  assert.match(update, /permissions:\n\s+contents: read\n/);
+  assert.doesNotMatch(update, /contents: write|pull-requests: write|GH_TOKEN/);
+  assert.match(update, /persist-credentials: false/);
+  // The job with the write token installs and runs nothing from the dependencies.
+  assert.doesNotMatch(pr, /^\s*(- )?(run: )?(pnpm|npm|npx|node)\s/m);
+  assert.doesNotMatch(pr, /uses: (actions\/setup-node|pnpm\/action-setup)@/);
+  assert.ok(
+    pr.includes(
+      String.raw`grep -vxE 'package\.json|(apps|packages|adapters)/[^/]+/package\.json|pnpm-lock\.yaml|adapters/cloudflare/licenses/THIRD-PARTY-LICENSES\.txt'`,
+    ),
+    'the patch filter allows only the manifests, the lockfile and the licence file',
+  );
+  // The filter reads what the patch staged, both sides of a rename included, and only the index is committed (D331);
+  // tools/deps/upgrade-patch.test.mjs runs the step itself.
+  assert.match(pr, /git apply --index "\$patch"/);
+  assert.match(pr, /git diff --cached --name-only --no-renames/);
+  assert.doesNotMatch(pr, /git apply --numstat|commit -am/);
+  assert.match(pr, /commit -m 'chore: pnpm upgrade'/);
+  // Minor and patch bumps through the script, majors never (D330).
+  assert.match(update, /run: node tools\/deps\/bump\.mjs\n/);
+  assert.doesNotMatch(text, /--latest/);
+  // The licence file of the Cloudflare bundle is regenerated with the bump (D105).
+  assert.match(update, /run: pnpm --filter @hostmark\/adapter-cloudflare run licenses/);
+  assert.match(text, /cron: ["']23 9 \* \* 1["']/);
 });

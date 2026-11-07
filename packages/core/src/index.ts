@@ -3,6 +3,7 @@ export * from './errors';
 export { type AppOptions, createApp } from './http/app';
 export type { Principal } from './http/context';
 export { publicPaths } from './http/purge';
+export { htmlSecurityHeaders, isHttps, withSecurityHeaders } from './http/security';
 export { createJobHandler } from './jobs/handler';
 export { createSchedulerJobs } from './jobs/scheduler';
 export type * from './ports';

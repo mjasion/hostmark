@@ -1,4 +1,6 @@
 import { RUM_PLATFORMS } from '@hostmark/contract';
+import { loadEnv } from '@hostmark/node-runtime/env';
+import { staticSecurity } from '@hostmark/node-runtime/runtime';
 import { describe, expect, it } from 'vitest';
 import { CLIENT_IP_HEADER, platform } from '../src/platform';
 
@@ -31,6 +33,19 @@ describe('platform', () => {
   it('uses virtual-hosted-style S3 URLs, which Tigris requires, unless set otherwise (D280)', () => {
     expect(platform.env?.(tigris)?.S3_VIRTUAL_HOST).toBe('true');
     expect(platform.env?.({ ...tigris, S3_VIRTUAL_HOST: 'false' })?.S3_VIRTUAL_HOST).toBe('false');
+  });
+
+  it('allows the virtual-hosted Tigris origin of its presigned URLs in the HTML policy (D310)', () => {
+    const env = loadEnv({
+      ...platform.env?.(tigris),
+      DATABASE_URL: 'postgres://u:p@h/d',
+      REDIS_URL: 'redis://h:6379',
+      PUBLIC_URL: 'https://hostmark.fly.dev',
+    });
+    expect(staticSecurity(env)).toEqual({
+      publicUrl: 'https://hostmark.fly.dev',
+      storageOrigin: 'https://hostmark-bucket.fly.storage.tigris.dev',
+    });
   });
 
   it('lets explicit S3 settings win, and ignores empty ones', () => {

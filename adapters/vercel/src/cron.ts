@@ -1,5 +1,5 @@
 import { SCHEDULER_JOBS, type SchedulerJobName } from '@hostmark/contract';
-import { createSchedulerJobs } from '@hostmark/core';
+import { createSchedulerJobs, withSecurityHeaders } from '@hostmark/core';
 import type { Runtime } from './runtime';
 import { sameSecret } from './secret';
 
@@ -25,6 +25,12 @@ export function jobOf(url: URL): string {
  */
 export function createCronHandler(getRuntime: () => Pick<Runtime, 'deps' | 'vars'>) {
   return async function cron(request: Request): Promise<Response> {
+    const { deps } = getRuntime();
+    // D310: the API's headers, as on every other /api answer.
+    return withSecurityHeaders(await run(request), request, deps.config.publicUrl);
+  };
+
+  async function run(request: Request): Promise<Response> {
     const { deps, vars } = getRuntime();
     if (!sameSecret(request.headers.get('authorization') ?? '', `Bearer ${vars.CRON_SECRET}`))
       return text(401, 'Unauthorized');
@@ -32,5 +38,5 @@ export function createCronHandler(getRuntime: () => Pick<Runtime, 'deps' | 'vars
     if (!Object.hasOwn(SCHEDULER_JOBS, job)) return text(400, `Unknown job: ${job}`);
     await createSchedulerJobs(deps)[job as SchedulerJobName]();
     return text(200, 'ok');
-  };
+  }
 }

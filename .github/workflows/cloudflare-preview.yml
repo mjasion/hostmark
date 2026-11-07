@@ -85,7 +85,7 @@ jobs:
       # No secret in the environment of the steps that run the pull request's own code (install scripts, build).
       # Secrets exist only in the later steps, which still start the head's wrangler: that step is the part this
       # job cannot isolate.
-      - run: npm install --global pnpm@12.15.0
+      - run: npm install --global pnpm@12.18.0
       - run: pnpm install --frozen-lockfile
         working-directory: head
       - run: pnpm --filter @hostmark/adapter-cloudflare build

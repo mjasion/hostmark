@@ -1,4 +1,4 @@
-import { createApp } from '@hostmark/core';
+import { createApp, withSecurityHeaders } from '@hostmark/core';
 import { Hono } from 'hono';
 import { ConfigError, ORIGIN_SECRET_HEADER } from './env';
 import type { Runtime } from './runtime';
@@ -31,11 +31,13 @@ export function createApiApp(getRuntime: () => Pick<Runtime, 'deps' | 'vars'>): 
     try {
       expected = getRuntime().vars.ORIGIN_SECRET;
     } catch (err) {
-      if (err instanceof ConfigError) return problem(500, 'Internal Server Error');
+      // D310: these answers are built before core, so they get its security headers here; HSTS follows the scheme.
+      if (err instanceof ConfigError)
+        return withSecurityHeaders(problem(500, 'Internal Server Error'), c.req.raw);
       throw err;
     }
     if (expected && !sameSecret(c.req.header(ORIGIN_SECRET_HEADER) ?? '', expected))
-      return problem(403, 'Forbidden');
+      return withSecurityHeaders(problem(403, 'Forbidden'), c.req.raw);
     await next();
   });
   app.route(

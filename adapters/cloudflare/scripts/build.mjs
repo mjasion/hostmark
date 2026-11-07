@@ -1,11 +1,11 @@
 // Prepares what wrangler uploads besides the Worker code: the static assets (the web build plus a `_headers` file).
 // The Workers themselves are bundled by `wrangler deploy`; `pnpm check` bundles them offline to prove they build.
-//   node scripts/build.mjs [--skip-web]
+//   node --import tsx scripts/build.mjs [--skip-web]      (`pnpm build`; headers.mjs imports TypeScript, D310)
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { headersFile } from './headers.mjs';
+import { headersFile, storageOriginForBuild } from './headers.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = resolve(root, '..', '..');
@@ -29,9 +29,12 @@ if (!existsSync(join(dist, 'app', 'index.html'))) {
   process.exit(1);
 }
 
+// D310: the origin of presigned R2 URLs for the prerendered pages' policy, from the same vars the Worker presigns with.
+const storageOrigin = storageOriginForBuild();
 rmSync(assets, { recursive: true, force: true });
 mkdirSync(assets, { recursive: true });
 cpSync(dist, assets, { recursive: true });
-// Same cache policy as the Node static handler (packages/node-runtime/src/static.ts, D88), one value per file (D251).
-writeFileSync(join(assets, '_headers'), headersFile());
-console.log(`assets ready in ${assets}`);
+// Same cache policy as the Node static handler (packages/node-runtime/src/static.ts, D88), one value per file (D251),
+// and the security headers of D310.
+writeFileSync(join(assets, '_headers'), headersFile({ storageOrigin }));
+console.log(`assets ready in ${assets} (storage origin in the pages' policy: ${storageOrigin})`);

@@ -1,7 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { type Key, pathToRegexp } from 'path-to-regexp';
 import { describe, expect, it } from 'vitest';
-import { CACHE_HEADERS, cacheControlFor } from '../scripts/check-config';
+import {
+  CACHE_HEADERS,
+  cacheControlFor,
+  checkSecurityHeaders,
+  headersFor,
+  SECURITY_PATHS,
+} from '../scripts/check-config';
+import { withContentSecurityPolicy } from '../scripts/security-headers';
 
 // Routing of vercel.json as the Vercel CLI 65.11.0 builds it (`@vercel/routing-utils` `getTransformedRoutes`): the
 // filesystem (static files of `public/` and the functions of `api/`) answers first, then `rewrites` in order, each
@@ -118,5 +125,62 @@ describe('vercel.json Cache-Control', () => {
       '/application',
     ])
       expect(cacheControlFor(config, path), path).toBeUndefined();
+  });
+});
+
+describe('vercel.json security headers (D310)', () => {
+  it('match the contract on every path, and the deploy adds the policy to the HTML paths only', () => {
+    expect(checkSecurityHeaders(config)).toEqual([]);
+    const deployed = withContentSecurityPolicy(config, 'https://acct.r2.cloudflarestorage.com');
+    for (const [path, kind] of Object.entries(SECURITY_PATHS)) {
+      const csp = headersFor(deployed, path)['content-security-policy'];
+      if (kind === 'html')
+        expect(csp, path).toContain("connect-src 'self' https://acct.r2.cloudflarestorage.com;");
+      else expect(csp, path).toBeUndefined();
+    }
+  });
+
+  it('covers every path the routes serve from a file, and leaves the function paths to core', () => {
+    for (const path of [
+      '/',
+      '/pricing',
+      '/pricing/',
+      '/login',
+      '/signup',
+      '/app',
+      '/app/',
+      `/app/files/${id}`,
+    ])
+      expect(SECURITY_PATHS[path] ?? 'html', path).toBe('html');
+    for (const path of ['/api/health', `/media/${id}/128.webp`, `/f/${id}`]) {
+      expect(route(path), path).toMatch(/^function /);
+      expect(headersFor(config, path)['x-content-type-options'], path).toBeUndefined();
+    }
+    for (const file of FILES)
+      expect(headersFor(config, file)['x-content-type-options'], file).toBe('nosniff');
+  });
+
+  it('fails the check when a rule is lost, widened or carries the policy itself', () => {
+    const without = { ...config, headers: config.headers.slice(1) };
+    expect(checkSecurityHeaders(without).join('\n')).toContain(
+      '/rum.js must get x-content-type-options nosniff',
+    );
+    const everywhere = {
+      ...config,
+      headers: config.headers.map((h, i) => (i === 0 ? { ...h, source: '/(.*)' } : h)),
+    };
+    expect(checkSecurityHeaders(everywhere).join('\n')).toContain(
+      '/api/health must get x-content-type-options (none)',
+    );
+    const own = {
+      ...config,
+      headers: [
+        ...config.headers,
+        { source: '/', headers: [{ key: 'Content-Security-Policy', value: "default-src 'self'" }] },
+      ],
+    };
+    expect(checkSecurityHeaders(own)).toEqual([
+      'headers: vercel.json must not set Content-Security-Policy itself',
+    ]);
   });
 });

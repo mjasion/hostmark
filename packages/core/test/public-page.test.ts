@@ -1,4 +1,5 @@
 import { files } from '@hostmark/db';
+import { CSS_HASH } from '@hostmark/pages';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/http/app';
@@ -41,10 +42,13 @@ describe.skipIf(!databaseUrl)('GET /f/:id', () => {
     expect(res.headers.get('x-platform')).toBe('test-portable');
     expect(res.headers.get('x-version')).toBe('abc1234');
     expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    // D310: the inline style by its hash instead of 'unsafe-inline'; HSTS because the public URL is https.
     expect(res.headers.get('content-security-policy')).toBe(
-      "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      `default-src 'none'; style-src '${CSS_HASH}'; img-src 'self' data:; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
     );
     expect(res.headers.get('referrer-policy')).toBe('same-origin');
+    expect(res.headers.get('strict-transport-security')).toBe('max-age=31536000');
+    expect(res.headers.get('x-frame-options')).toBeNull();
     // D300: out of search results, while the Open Graph tags below still serve link previews.
     expect(res.headers.get('x-robots-tag')).toBe('noindex');
     const html = await res.text();

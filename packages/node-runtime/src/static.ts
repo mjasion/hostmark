@@ -1,7 +1,9 @@
-// Serves the built web app (apps/web/dist) from a Node process with the headers a CDN would apply (D21, D88).
-// Platform-neutral on purpose: the shared Node runtime planned for E5/E7 takes this file as it is.
+// Serves the built web app (apps/web/dist) from a Node process with the headers a CDN would apply (D21, D88) and the
+// security headers of D310. Platform-neutral on purpose: local, VPS, Fly, Railway and GCP serve the files with it.
 import { readFile, realpath } from 'node:fs/promises';
 import { extname, join, resolve, sep } from 'node:path';
+import { securityHeaders } from '@hostmark/contract';
+import { htmlSecurityHeaders, isHttps } from '@hostmark/core';
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -37,6 +39,11 @@ const isReserved = (path: string) => RESERVED.some((p) => path === p || path.sta
 export interface StaticOptions {
   /** Directory with the Vite build and the prerendered pages. */
   root: string;
+  /**
+   * D310. `publicUrl` decides HSTS as it does for the app (`isHttps` of core); `storageOrigin` is the origin of the
+   * presigned URLs, which the HTML policy allows for thumbnails and uploads (`storageSecurity` of ./runtime).
+   */
+  security: { publicUrl?: string; storageOrigin: string };
 }
 
 /**
@@ -45,6 +52,7 @@ export interface StaticOptions {
  */
 export function createStaticHandler(options: StaticOptions): (req: Request) => Promise<Response | null> {
   const root = resolve(options.root);
+  const { publicUrl } = options.security;
   // Resolved on first use: the directory may not exist yet when the handler is created.
   let realRoot: string | undefined;
   const cache = new Map<string, Buffer | null>();
@@ -91,12 +99,19 @@ export function createStaticHandler(options: StaticOptions): (req: Request) => P
     // system, so `/app/files/..%2f..%2fetc` gets the app and its "File not found" view, not the API's 404 (D303).
     const files = isShellRoute(path) ? [join(root, SHELL)] : candidates(path);
     // Malformed and dotfile paths under /assets/ are a plain miss, with the same no-store answer as any other.
-    if (!files) return path.startsWith('/assets/') ? notFound() : null;
+    if (!files) return path.startsWith('/assets/') ? notFound(req) : null;
     for (const file of files) {
       const body = await read(file);
       if (!body) continue;
       const type = TYPES[extname(file)] ?? 'application/octet-stream';
       const headers = {
+        // D310: HTML documents get their policy; scripts, styles, images and text only the common set.
+        ...(type.startsWith('text/html')
+          ? htmlSecurityHeaders({
+              https: isHttps(req, publicUrl),
+              storageOrigin: options.security.storageOrigin,
+            })
+          : securityHeaders('other', { https: isHttps(req, publicUrl) })),
         'content-type': type,
         'content-length': String(body.length),
         'cache-control': path.startsWith('/assets/') ? IMMUTABLE : SHORT,
@@ -104,12 +119,17 @@ export function createStaticHandler(options: StaticOptions): (req: Request) => P
       return new Response(req.method === 'HEAD' ? null : new Uint8Array(body), { headers });
     }
     // A CDN must not keep the miss of an asset that the next deploy adds (the app's own 404 is no-store too, D303).
-    return path.startsWith('/assets/') ? notFound() : null;
+    return path.startsWith('/assets/') ? notFound(req) : null;
   };
-}
 
-const notFound = () =>
-  new Response(JSON.stringify({ type: 'about:blank', title: 'Not Found', status: 404 }), {
-    status: 404,
-    headers: { 'content-type': 'application/problem+json', 'cache-control': 'no-store' },
-  });
+  function notFound(req: Request): Response {
+    return new Response(JSON.stringify({ type: 'about:blank', title: 'Not Found', status: 404 }), {
+      status: 404,
+      headers: {
+        ...securityHeaders('other', { https: isHttps(req, publicUrl) }),
+        'content-type': 'application/problem+json',
+        'cache-control': 'no-store',
+      },
+    });
+  }
+}

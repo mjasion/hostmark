@@ -125,7 +125,11 @@ On `workerd` through Miniflare 4 (the real wrangler dry-run bundles, not test do
 - **Configuration** (`test/env.test.ts`): the example secret is refused outside `local`, a missing `MEDIA` binding is
   refused by `createWorkersCachePurger`, a bad `clientIpHeader` is refused at startup.
 - **Static asset headers** (`test/headers.test.ts`): the generated `_headers` served by workerd's asset server, one
-  `Cache-Control` per file (D251).
+  `Cache-Control` per file (D251), and the security headers of D310 once each: the common set and HSTS on every file,
+  the HTML set on the prerendered pages only (D315). The panel shell gets its HTML set from the Worker
+  (`test/smoke.test.ts`). `pnpm build` runs `node --import tsx scripts/build.mjs`; the pages' policy names the R2
+  origin from `R2_ACCOUNT_ID`, `R2_BUCKET_NAME` and `R2_PUBLIC_ENDPOINT` of the environment, else of
+  `wrangler.api.jsonc`. Keep the zone's own HSTS setting off: the Worker and `_headers` send it already (D311).
 - **Trace id on cached paths** (`test/http.test.ts`): the gateway gives `/media` and `/f` responses their own
   `x-trace-id` (D257).
 - **Deploy guards** (`test/check-config.test.ts`, `test/bootstrap.test.ts`): `check --deploy` refuses the
