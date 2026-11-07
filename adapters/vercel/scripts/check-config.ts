@@ -143,8 +143,8 @@ function checkLimits(c: VercelConfig): string[] {
     );
   if (c.functions?.['api/queue.js']?.maxConcurrency !== 1)
     problems.push('functions: api/queue.js must set maxConcurrency 1 (one image job per instance)');
-  if (c.installCommand !== 'cd ../.. && npx --yes pnpm@12.16.1 install --frozen-lockfile')
-    problems.push('installCommand: must install with pnpm 12.16.1 from the repository root (D273)');
+  if (c.installCommand !== 'cd ../.. && npx --yes pnpm@12.18.0 install --frozen-lockfile')
+    problems.push('installCommand: must install with pnpm 12.18.0 from the repository root (D273)');
   return problems;
 }
 

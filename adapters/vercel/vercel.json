@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "installCommand": "cd ../.. && npx --yes pnpm@12.16.1 install --frozen-lockfile",
+  "installCommand": "cd ../.. && npx --yes pnpm@12.18.0 install --frozen-lockfile",
   "buildCommand": "node --import tsx scripts/build.ts",
   "outputDirectory": "public",
   "regions": ["fra1"],

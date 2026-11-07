@@ -88,7 +88,7 @@ OpenTelemetry Node SDK through `@hostmark/telemetry/node`.
 - Trace link: the worker trace carries `link:traceID` of the producer. Find it in Grafana Explore (Tempo) with the
   TraceQL query `{ link:traceID = "<trace id of the upload>" }`.
 - Lockfile: regenerate it with pnpm 12 in a container, which keeps both YAML documents:
-  `docker run --rm -v "$PWD/../..":/repo -w /repo node:22.23.4-slim sh -c 'npm install --global pnpm@12.16.1 >/dev/null 2>&1 && pnpm install --lockfile-only'`
+  `docker run --rm -v "$PWD/../..":/repo -w /repo node:22.23.4-slim sh -c 'npm install --global pnpm@12.18.0 >/dev/null 2>&1 && pnpm install --lockfile-only'`
 - The chainguard MinIO has no bucket CORS API (501) and no shell for a healthcheck; CORS is server-wide (D62).
 - Producer and worker spans are two traces joined by a link, not one parented trace (D40, D69).
 - Redis persistence is AOF on a named volume; it is not tuned for benchmarking.

@@ -117,7 +117,7 @@ jobs:
       # before the step that reads the environment's secrets.
       - name: Install dependencies and generate the fixtures
         run: |
-          npm install --global --prefix "$RUNNER_TEMP/pnpm" pnpm@12.16.1
+          npm install --global --prefix "$RUNNER_TEMP/pnpm" pnpm@12.18.0
           export PATH="$RUNNER_TEMP/pnpm/bin:$PATH"
           pnpm install --frozen-lockfile
           node load/tools/fixtures.mjs
@@ -166,7 +166,7 @@ jobs:
       # before the step that reads the environment's secrets.
       - name: Install dependencies and generate the fixtures
         run: |
-          npm install --global --prefix "$RUNNER_TEMP/pnpm" pnpm@12.16.1
+          npm install --global --prefix "$RUNNER_TEMP/pnpm" pnpm@12.18.0
           export PATH="$RUNNER_TEMP/pnpm/bin:$PATH"
           pnpm install --frozen-lockfile
           node load/tools/fixtures.mjs

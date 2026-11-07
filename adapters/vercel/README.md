@@ -55,7 +55,7 @@ subset of `https://openapi.vercel.sh/vercel.json` (fetched 2026-11-01, kept in `
 draft 04 with numeric `exclusiveMinimum`) and checks that every `SCHEDULER_JOBS` entry is a cron of
 `/api/cron/<job>` with the same schedule and that the first rewrite sends those paths to the cron function, that a queue
 trigger exists for `image-jobs` with `maxDeliveries` 8, that the dead letter topic has no consumer, that `buildCommand`
-runs `scripts/build.ts`, that `installCommand` uses pnpm 12.16.1, that `functions` names exactly the bundled
+runs `scripts/build.ts`, that `installCommand` uses pnpm 12.18.0, that `functions` names exactly the bundled
 `api/<name>.js` files (the image functions with the codecs in `includeFiles`), that the api function's `maxDuration`
 outlasts the 60 s event stream by 30 s, that the queue consumer sets `maxConcurrency` 1, that `headers` gives each
 served path the `Cache-Control` of D88, that `regions` is one region with a RUM name, and that `package.json` pins
@@ -66,7 +66,7 @@ served path the `Cache-Control` of D88, that `regions` is one region with a RUM 
 The Vercel project's Root Directory is `adapters/vercel` (project setting, set once in the dashboard or the API; the
 setting and "include source files outside of the Root Directory" are not verified). `vercel.json` and `api/` then sit
 at the root of the project as zero-config functions require. `installCommand` steps up to the monorepo root and runs
-`npx --yes pnpm@12.16.1 install --frozen-lockfile` (D273). `buildCommand` is `node --import tsx scripts/build.ts`,
+`npx --yes pnpm@12.18.0 install --frozen-lockfile` (D273). `buildCommand` is `node --import tsx scripts/build.ts`,
 which:
 
 1. builds `apps/web` with the RUM attributes (`vercel`, `portable`, `single`, and the region of `regions`) and copies
@@ -95,9 +95,9 @@ project.
 project setting (D279); the repository tests with Node 22. pnpm: Vercel picks the pnpm of a build from the lockfile
 version unless corepack is enabled, and `lockfileVersion: '9.0'` maps to pnpm 9 or 10 (as relayed from Vercel's
 documentation, which could not be read here: not verified), while this repository needs pnpm 12 (`packageManager`,
-`allowBuilds` of D201). `installCommand` therefore runs pnpm 12.16.1 through `npx`, which needs only the npm of the
+`allowBuilds` of D201). `installCommand` therefore runs pnpm 12.18.0 through `npx`, which needs only the npm of the
 build image. `scripts/build.ts` still calls `pnpm --filter @hostmark/web build` with the `pnpm` on `PATH`: in the
-deploy path of this README `vercel build` runs on the GitHub runner, where that is the pnpm 12.16.1 `deploy.yml`
+deploy path of this README `vercel build` runs on the GitHub runner, where that is the pnpm 12.18.0 `deploy.yml`
 installs. A build on Vercel's own machines (a git integration, which this repository does not use) gets Vercel's pnpm
 for that call; set the project variable `ENABLE_EXPERIMENTAL_COREPACK=1` there so `packageManager` decides. Not
 verified: either path on a real build.
