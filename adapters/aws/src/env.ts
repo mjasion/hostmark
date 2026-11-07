@@ -52,6 +52,13 @@ export const varsSchema = z.object({
   QUEUE_BACKOFF_SCALE: z.coerce.number().min(0).default(1),
 });
 
+/**
+ * The S3 endpoint of the functions, path-style: `https://s3.<region>.amazonaws.com` unless a stand-in overrides it. Its
+ * origin is the storage source of the HTML policy in template.yaml (D310), which `template-check` compares with it.
+ */
+export const s3Endpoint = (vars: { S3_ENDPOINT?: string; AWS_REGION: string }): string =>
+  vars.S3_ENDPOINT ?? `https://s3.${vars.AWS_REGION}.amazonaws.com`;
+
 export type Vars = z.infer<typeof varsSchema>;
 
 /**

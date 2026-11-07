@@ -142,6 +142,9 @@ export function checkConfig(tf: string = readInfra()): string[] {
   const backend = resourceBlocks(tf, 'google_compute_backend_service').get('api') ?? '';
   expect(/cache_mode\s*=\s*"USE_ORIGIN_HEADERS"/.test(backend), 'Cloud CDN must use the origin headers');
   expect(/compression_mode\s*=\s*"AUTOMATIC"/.test(backend), 'Cloud CDN must compress text responses (D208)');
+  // D310: the api sends the security headers (and HSTS, PUBLIC_URL being https) on every answer, static files included;
+  // a response header added by the load balancer would be sent twice.
+  expect(!/custom_response_headers/.test(backend), 'the backend service must add no response header (D310)');
   for (const ttl of ['default_ttl', 'max_ttl', 'client_ttl'])
     expect(
       !new RegExp(`^\\s*${ttl}\\s*=`, 'm').test(backend),

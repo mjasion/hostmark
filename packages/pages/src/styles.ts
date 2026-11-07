@@ -43,6 +43,16 @@ footer.site{border-top:1px solid var(--hm-line);padding:1.5rem 0;color:var(--hm-
 @media (max-width:30rem){nav.site{gap:.75rem}main{padding:2rem 0 3rem}}
 `;
 
+/**
+ * CSP hash source of `CSS` as the layout renders it, byte for byte (D310). A constant rather than computed at load, so
+ * the package needs no crypto API in any runtime and build scripts can read it; `test/pages.test.ts` hashes `CSS` and
+ * every `<style>` of every page and fails with the new value when the CSS changes.
+ */
+export const CSS_HASH = 'sha256-j32VbnCSOf7Lz2RkhmnZxgGNSuXeXyjyU5hgjrvaRiM=';
+
+/** Hash sources of every inline `<style>` a page of this package contains: the prerendered pages and `/f/*`. */
+export const STYLE_HASHES: readonly string[] = [CSS_HASH];
+
 /** The custom properties above, for the SPA to match. */
 export const CSS_VARIABLES = [
   '--hm-bg',

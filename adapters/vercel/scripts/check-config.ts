@@ -1,11 +1,20 @@
 // `pnpm check`: validates vercel.json offline against a subset of the published schema
 // (https://openapi.vercel.sh/vercel.json, kept in vercel.schema.subset.json) and against the contract.
 import { existsSync, readFileSync } from 'node:fs';
-import { SCHEDULER_JOBS, SSE_MAX_DURATION_MS } from '@hostmark/contract';
+import {
+  COMMON_SECURITY_HEADERS,
+  HSTS,
+  HTML_SECURITY_HEADERS,
+  htmlCsp,
+  SCHEDULER_JOBS,
+  SSE_MAX_DURATION_MS,
+} from '@hostmark/contract';
+import { STYLE_HASHES } from '@hostmark/pages/styles';
 import { pathToRegexp } from 'path-to-regexp';
 import { rumRegionOf } from '../src/build-info';
 import { MAX_DELIVERIES } from '../src/queue';
 import { FUNCTIONS } from './build';
+import { withContentSecurityPolicy } from './security-headers';
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type Schema = { [key: string]: Json };
@@ -99,7 +108,7 @@ export function checkConfig(
   for (const t of triggers.filter((x) => x.topic === 'image-jobs'))
     if (t.maxDeliveries !== MAX_DELIVERIES)
       problems.push(`functions: the image-jobs trigger must set maxDeliveries ${MAX_DELIVERIES}`);
-  problems.push(...checkLayout(c), ...checkLimits(c), ...checkCacheHeaders(c));
+  problems.push(...checkLayout(c), ...checkLimits(c), ...checkCacheHeaders(c), ...checkSecurityHeaders(c));
   return problems;
 }
 
@@ -134,8 +143,8 @@ function checkLimits(c: VercelConfig): string[] {
     );
   if (c.functions?.['api/queue.js']?.maxConcurrency !== 1)
     problems.push('functions: api/queue.js must set maxConcurrency 1 (one image job per instance)');
-  if (c.installCommand !== 'cd ../.. && npx --yes pnpm@12.15.0 install --frozen-lockfile')
-    problems.push('installCommand: must install with pnpm 12.15.0 from the repository root (D273)');
+  if (c.installCommand !== 'cd ../.. && npx --yes pnpm@12.18.0 install --frozen-lockfile')
+    problems.push('installCommand: must install with pnpm 12.18.0 from the repository root (D273)');
   return problems;
 }
 
@@ -172,6 +181,91 @@ export function cacheControlFor(c: VercelConfig, path: string): string | undefin
     value = h.headers.find((x) => x.key.toLowerCase() === 'cache-control')?.value ?? value;
   }
   return value;
+}
+
+/**
+ * Every header `headers` gives a request path (lowercase names), as `@vercel/routing-utils` applies them: each source
+ * against the path as requested, a later match overriding an earlier one for the same name.
+ */
+export function headersFor(c: VercelConfig, path: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const h of c.headers ?? []) {
+    if (!pathToRegexp(h.source, [], { strict: true, sensitive: true, delimiter: '/' }).test(path)) continue;
+    for (const { key, value } of h.headers) out[key.toLowerCase()] = value;
+  }
+  return out;
+}
+
+/** What the static output serves at a path, for the security headers of D310; `function` answers get core's. */
+export const SECURITY_PATHS: Record<string, 'html' | 'other' | 'function'> = {
+  '/': 'html',
+  '/index.html': 'html',
+  '/pricing': 'html',
+  '/pricing/': 'html',
+  '/pricing/index.html': 'html',
+  '/login': 'html',
+  '/signup/': 'html',
+  '/app': 'html',
+  '/app/index.html': 'html',
+  '/app/files/0b9e3a52-5f5c-4d0e-9a51-2a3c8f0e1d42': 'html',
+  '/assets/app-1a2b3c.js': 'other',
+  '/assets/app-1a2b3c.css': 'other',
+  '/rum.js': 'other',
+  '/robots.txt': 'other',
+  '/favicon.svg': 'other',
+  '/nope': 'other',
+  '/f': 'other',
+  '/media': 'other',
+  '/api': 'function',
+  '/api/health': 'function',
+  '/api/cron/daily-stats': 'function',
+  '/api/queue': 'function',
+  '/media/0b9e3a52-5f5c-4d0e-9a51-2a3c8f0e1d42/128.webp': 'function',
+  '/f/0b9e3a52-5f5c-4d0e-9a51-2a3c8f0e1d42': 'function',
+};
+
+const SECURITY_NAMES = [
+  ...Object.keys(COMMON_SECURITY_HEADERS),
+  'strict-transport-security',
+  'content-security-policy',
+  ...Object.keys(HTML_SECURITY_HEADERS),
+];
+
+/**
+ * D310 with the values of the contract: the common set and HSTS (Vercel serves only HTTPS) on every file, the HTML set
+ * on the HTML paths only, nothing on a function path (core sets them there, and two sources could disagree). The
+ * policy itself is not in vercel.json: the deploy adds it to the HTML rules (`withContentSecurityPolicy`).
+ */
+export function checkSecurityHeaders(
+  c: VercelConfig,
+  storageOrigin = 'https://acct.r2.cloudflarestorage.com',
+): string[] {
+  const problems: string[] = [];
+  let deployed: VercelConfig;
+  try {
+    deployed = withContentSecurityPolicy(c, storageOrigin);
+  } catch (err) {
+    return [`headers: ${(err as Error).message}`];
+  }
+  const common = { ...COMMON_SECURITY_HEADERS, 'strict-transport-security': HSTS };
+  const html = { ...common, ...HTML_SECURITY_HEADERS };
+  const csp = htmlCsp({ storageOrigin, styleHashes: STYLE_HASHES });
+  for (const [path, kind] of Object.entries(SECURITY_PATHS)) {
+    const expected: Record<string, string> = kind === 'function' ? {} : kind === 'html' ? html : common;
+    for (const [config, extra] of [
+      [c, {}],
+      [deployed, kind === 'html' ? { 'content-security-policy': csp } : {}],
+    ] as const) {
+      const want: Record<string, string> = { ...expected, ...extra };
+      const got = headersFor(config, path);
+      for (const name of SECURITY_NAMES)
+        if (got[name] !== want[name])
+          problems.push(
+            `headers: ${path} must get ${name} ${want[name] ?? '(none)'}${config === deployed ? ' after the deploy adds the policy' : ''}, has ${got[name] ?? '(none)'}`,
+          );
+    }
+  }
+  return problems;
 }
 
 function checkCacheHeaders(c: VercelConfig): string[] {

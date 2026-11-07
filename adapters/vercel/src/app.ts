@@ -1,4 +1,4 @@
-import { createApp } from '@hostmark/core';
+import { createApp, withSecurityHeaders } from '@hostmark/core';
 import { Hono } from 'hono';
 import { ConfigError } from './env';
 import { tagOf } from './purge';
@@ -41,7 +41,9 @@ export function createApiApp(getRuntime: () => Pick<Runtime, 'deps'>): Hono {
     try {
       getRuntime();
     } catch (err) {
-      if (err instanceof ConfigError) return problem(500, 'Internal Server Error');
+      // D310: no configuration, so HSTS follows the request's scheme.
+      if (err instanceof ConfigError)
+        return withSecurityHeaders(problem(500, 'Internal Server Error'), c.req.raw);
       throw err;
     }
     await next();

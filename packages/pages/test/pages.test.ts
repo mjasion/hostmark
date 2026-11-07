@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { RUM_PLATFORMS } from '@hostmark/contract/constants';
 import { describe, expect, it } from 'vitest';
 import {
   CSS,
+  CSS_HASH,
   CSS_VARIABLES,
   type PublicFile,
   renderError,
@@ -9,7 +11,10 @@ import {
   renderNotFound,
   renderPricing,
   renderPublicFile,
+  STYLE_HASHES,
 } from '../src';
+
+const cspHash = (text: string) => `sha256-${createHash('sha256').update(text, 'utf8').digest('base64')}`;
 
 const rum = { platform: 'aws', variant: 'portable', topology: 'single', region: 'frankfurt' };
 const RUM_TAG =
@@ -61,6 +66,14 @@ describe.each(Object.entries(pages))('%s page', (_name, render) => {
     expect(html).toContain('<style>');
   });
 
+  it('has only inline styles whose hash the CSP allows, and no style attribute (D310)', () => {
+    const styles = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => cspHash(m[1] as string));
+    expect(styles).toEqual([CSS_HASH]);
+    for (const hash of styles) expect(STYLE_HASHES).toContain(hash);
+    // A `style="..."` attribute needs 'unsafe-inline' (or 'unsafe-hashes'), which no policy grants.
+    expect(html).not.toMatch(/<[^>]+\sstyle=/);
+  });
+
   it('links the favicon of the web build, once (D301)', () => {
     expect(html.match(/<link[^>]+rel="icon"[^>]*>/g)).toEqual([
       '<link rel="icon" href="/favicon.svg" type="image/svg+xml"/>',
@@ -89,6 +102,10 @@ describe('style', () => {
   it('has no gradients and uses every exported variable', () => {
     expect(CSS).not.toMatch(/gradient/);
     for (const v of CSS_VARIABLES) expect(CSS).toContain(`${v}:`);
+  });
+
+  it('exports the CSP hash of the CSS as it is now (update CSS_HASH in src/styles.ts when this fails)', () => {
+    expect(CSS_HASH).toBe(cspHash(CSS));
   });
 });
 

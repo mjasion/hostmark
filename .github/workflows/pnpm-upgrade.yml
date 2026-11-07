@@ -1,0 +1,240 @@
+name: pnpm upgrade
+
+# One PR with every minor and patch dependency bump at once (instead of a Renovate PR
+# per package), once a week; majors stay with Renovate and the owner. The branch is
+# rebuilt from main on every run — reset, bump, commit, force-push — so it never has
+# rebase conflicts: the lockfile is simply regenerated on top of the current main (D330, D331).
+#
+# Two jobs: `update` runs the freshly updated dependency code (install scripts,
+# typecheck, tests, build) with a read-only token and hands over only a patch;
+# `pr` holds the write token and never executes dependency code.
+#
+# A pull request opened or pushed with the workflow's GITHUB_TOKEN does not start other
+# workflows (GitHub's rule against recursive runs), so `ci` and `cloudflare-preview`
+# do not run on it by themselves: the checks run here and their result lands in the
+# PR body. The repository setting "Allow GitHub Actions to create and approve pull
+# requests" must be on for the `pr` job.
+
+on:
+  schedule:
+    # Mondays, off the full hour: GitHub delays (or drops) schedule events most at :00.
+    - cron: "23 9 * * 1" # 09:23 UTC = 11:23 Warsaw (CEST), 10:23 in winter (CET)
+  workflow_dispatch:
+
+concurrency:
+  group: pnpm-upgrade
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  BRANCH: chore/pnpm-upgrade
+
+jobs:
+  update:
+    name: pnpm update + checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+      typecheck: ${{ steps.typecheck.outcome }}
+      test: ${{ steps.test.outcome }}
+      lint: ${{ steps.lint.outcome }}
+      build: ${{ steps.build.outcome }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      # The pnpm version comes from `packageManager` in package.json.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # The Node line of CI, the images and `engines` (D3, D248).
+          node-version: 22
+          cache: "pnpm"
+
+      - name: Bump minor and patch versions
+        # The manifests pin exact versions, which `pnpm update` alone never moves: the script
+        # raises each pin to the newest release of the same major, then runs `pnpm update` for
+        # the rest of the lockfile; minimumReleaseAge, allowBuilds and the overrides of
+        # pnpm-workspace.yaml apply (tools/deps/bump.mjs).
+        run: node tools/deps/bump.mjs
+
+      - name: Regenerate the Cloudflare licence file
+        # The bundled packages' licence texts change with their versions, and `pnpm check` of
+        # adapters/cloudflare fails on a stale file (D105), so the bump carries the new one.
+        run: pnpm --filter @hostmark/adapter-cloudflare run licenses
+
+      - name: Detect changes
+        id: diff
+        run: |
+          git diff --binary -- ':(glob)**/package.json' pnpm-lock.yaml adapters/cloudflare/licenses/THIRD-PARTY-LICENSES.txt \
+            > "$RUNNER_TEMP/upgrade.patch"
+          if [ -s "$RUNNER_TEMP/upgrade.patch" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --stat
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing to upgrade."
+          fi
+
+      - name: Upload patch
+        if: steps.diff.outputs.changed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-patch
+          path: ${{ runner.temp }}/upgrade.patch
+          retention-days: 3
+
+      - name: Typecheck
+        id: typecheck
+        if: steps.diff.outputs.changed == 'true'
+        continue-on-error: true
+        run: pnpm typecheck
+
+      - name: Test
+        id: test
+        if: steps.diff.outputs.changed == 'true'
+        continue-on-error: true
+        # As in ci.yml: vitest (suites that need Postgres, Redis or an emulator skip) plus
+        # the load, platform and pipeline tests.
+        run: pnpm test
+
+      - name: Lint
+        id: lint
+        if: steps.diff.outputs.changed == 'true'
+        continue-on-error: true
+        run: pnpm lint
+
+      - name: Build
+        id: build
+        if: steps.diff.outputs.changed == 'true'
+        continue-on-error: true
+        # The web app and every adapter bundle (esbuild, wrangler --dry-run); no deploy.
+        run: pnpm --recursive --if-present --workspace-concurrency=1 build
+
+  pr:
+    name: Open or update PR
+    # Only git + gh, no build: the 1-vCPU slim runner is enough.
+    runs-on: ubuntu-slim
+    needs: update
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download patch
+        if: needs.update.outputs.changed == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: upgrade-patch
+          path: ${{ runner.temp }}/patch
+
+      - name: Apply patch
+        if: needs.update.outputs.changed == 'true'
+        run: |
+          patch="$RUNNER_TEMP/patch/upgrade.patch"
+          git checkout -B "$BRANCH" origin/main
+          git apply --index "$patch"
+          # Only the workspace's manifests, the lockfile and the generated licence file may change.
+          # The check reads what the patch actually staged, both sides of a rename or copy included
+          # (--no-renames): numstat names only the new path of a rename, so a patch
+          # could rename any file onto a manifest and delete it that way.
+          bad=$(git diff --cached --name-only --no-renames \
+            | grep -vxE 'package\.json|(apps|packages|adapters)/[^/]+/package\.json|pnpm-lock\.yaml|adapters/cloudflare/licenses/THIRD-PARTY-LICENSES\.txt' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::Patch touches unexpected paths: $bad"
+            exit 1
+          fi
+
+      - name: Commit and push
+        if: needs.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_URL: https://github.com/${{ github.repository }}
+        run: |
+          git -c core.hooksPath=/dev/null \
+            -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m 'chore: pnpm upgrade'
+
+          # Skip the force-push when the open branch already holds the same upgrade
+          # on top of the same main (no new bumps, main did not move).
+          if git rev-parse --verify -q "origin/$BRANCH" >/dev/null \
+            && [ "$(git rev-parse "origin/$BRANCH^")" = "$(git rev-parse origin/main)" ] \
+            && git diff --quiet "origin/$BRANCH" HEAD; then
+            echo "Branch already up to date, not pushing."
+          else
+            git -c core.hooksPath=/dev/null \
+              -c "http.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" \
+              push --force "$REPO_URL" "HEAD:refs/heads/$BRANCH"
+          fi
+
+      - name: Open or update PR
+        if: needs.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TYPECHECK: ${{ needs.update.outputs.typecheck }}
+          TEST: ${{ needs.update.outputs.test }}
+          LINT: ${{ needs.update.outputs.lint }}
+          BUILD: ${{ needs.update.outputs.build }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          icon() { [ "$1" = success ] && echo '✅' || echo '❌'; }
+
+          # Direct deps whose specifier changed: "name: old → new"
+          bumps=$(git diff HEAD^ HEAD -U0 -- ':(glob)**/package.json' \
+            | awk '
+              /^-[[:space:]]+"[^"]+": "/ { split($0, a, "\""); old[a[2]] = a[4] }
+              /^\+[[:space:]]+"[^"]+": "/ { split($0, a, "\""); if (a[2] in old) print "- `" a[2] "` " old[a[2]] " → " a[4] }
+            ' | sort -u)
+          [ -n "$bumps" ] || bumps='_Only transitive dependencies (lockfile)._'
+
+          body=$(cat <<EOF
+          Minor and patch bumps (\`tools/deps/bump.mjs\`) on top of \`$(git rev-parse --short origin/main)\`. Rebuilt from main weekly; [run]($RUN_URL).
+
+          $(icon "$TYPECHECK") typecheck · $(icon "$TEST") tests · $(icon "$LINT") lint · $(icon "$BUILD") build
+
+          A pull request from this workflow does not start \`ci\` by itself; the checks above ran in the run.
+
+          $bumps
+          EOF
+          )
+
+          pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --body "$body"
+          else
+            gh pr create --base main --head "$BRANCH" --title 'chore: pnpm upgrade' --body "$body"
+          fi
+
+      - name: Close stale PR
+        if: needs.update.outputs.changed == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')
+          if [ -n "$pr" ]; then
+            gh pr close "$pr" --delete-branch --comment 'main is already up to date.'
+          fi
+
+      - name: Fail on broken checks
+        if: needs.update.outputs.changed == 'true' && (needs.update.outputs.typecheck != 'success' || needs.update.outputs.test != 'success' || needs.update.outputs.lint != 'success' || needs.update.outputs.build != 'success')
+        run: |
+          echo "::error::Upgrade breaks typecheck / tests / lint / build — see the PR body."
+          exit 1

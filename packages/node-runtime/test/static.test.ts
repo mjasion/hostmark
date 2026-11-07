@@ -1,8 +1,14 @@
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { HSTS, HTML_SECURITY_HEADERS, htmlCsp } from '@hostmark/contract';
+import { STYLE_HASHES } from '@hostmark/pages/styles';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { staticSecurity } from '../src/runtime';
 import { createStaticHandler } from '../src/static';
+
+const STORAGE = 'http://127.0.0.1:59000';
+let root: string;
 
 let handle: (req: Request) => Promise<Response | null>;
 
@@ -10,7 +16,7 @@ const get = (path: string, method = 'GET') => handle(new Request(`http://x.test$
 
 beforeAll(() => {
   const parent = mkdtempSync(join(tmpdir(), 'hm-static-'));
-  const root = join(parent, 'dist');
+  root = join(parent, 'dist');
   for (const dir of ['assets', 'app', 'pricing', 'api', 'f', 'media', 'health', '.vite'])
     mkdirSync(join(root, dir), { recursive: true });
   writeFileSync(join(parent, 'secret.txt'), 'outside the root');
@@ -31,7 +37,7 @@ beforeAll(() => {
   writeFileSync(join(root, '.vite/manifest.json'), '{}');
   writeFileSync(join(root, '.env'), 'SECRET=1');
   symlinkSync(join(parent, 'secret.txt'), join(root, 'assets/link.txt'));
-  handle = createStaticHandler({ root });
+  handle = createStaticHandler({ root, security: { publicUrl: 'http://x.test', storageOrigin: STORAGE } });
 });
 
 describe('static handler', () => {
@@ -165,5 +171,89 @@ describe('static handler', () => {
       if (new URL(request.url).pathname.startsWith('/assets/')) expect(res?.status, path).toBe(404);
       else expect(res, path).toBeNull();
     }
+  });
+});
+
+describe('security headers of static files (D310)', () => {
+  const common = {
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'strict-origin-when-cross-origin',
+  };
+  const HTML = ['/', '/pricing', '/pricing/', '/login', '/signup/', '/app', '/app/files/123'];
+  const OTHER = [
+    '/assets/app-abc.js',
+    '/assets/app-abc.css',
+    '/rum.js',
+    '/robots.txt',
+    '/favicon.svg',
+    '/assets/x.js',
+  ];
+
+  it('gives every HTML document the full set, with the storage origin and the page style hashes', async () => {
+    for (const path of HTML) {
+      const res = await get(path);
+      expect(res?.headers.get('content-type'), path).toBe('text/html; charset=utf-8');
+      expect(Object.fromEntries(res?.headers ?? []), path).toMatchObject({
+        ...common,
+        ...HTML_SECURITY_HEADERS,
+        'content-security-policy': htmlCsp({ storageOrigin: STORAGE, styleHashes: STYLE_HASHES }),
+      });
+    }
+  });
+
+  it('gives assets, rum.js, robots.txt, the favicon and the assets 404 only the common set', async () => {
+    for (const path of OTHER) {
+      const res = await get(path);
+      const headers = Object.fromEntries(res?.headers ?? []);
+      expect(headers, path).toMatchObject(common);
+      for (const name of ['content-security-policy', ...Object.keys(HTML_SECURITY_HEADERS)])
+        expect(headers[name], `${path} ${name}`).toBeUndefined();
+    }
+  });
+
+  it('sends no HSTS over plain HTTP, even when a client claims https', async () => {
+    for (const path of [...HTML, ...OTHER]) {
+      const res = await handle(
+        new Request(`http://x.test${path}`, { headers: { 'x-forwarded-proto': 'https' } }),
+      );
+      expect(res?.headers.get('strict-transport-security'), path).toBeNull();
+    }
+  });
+
+  it('sends HSTS on everything when the public URL is https', async () => {
+    const tls = createStaticHandler({
+      root,
+      security: { publicUrl: 'https://hostmark.example', storageOrigin: 'https://bucket.example' },
+    });
+    for (const path of [...HTML, ...OTHER]) {
+      const res = await tls(new Request(`http://api:8080${path}`));
+      expect(res?.headers.get('strict-transport-security'), path).toBe(HSTS);
+    }
+    expect((await tls(new Request('http://api:8080/')))?.headers.get('content-security-policy')).toContain(
+      "connect-src 'self' https://bucket.example",
+    );
+  });
+
+  it('takes the storage origin from the settings the storage presigns with', () => {
+    const env = {
+      S3_ENDPOINT: 'http://minio:9000',
+      S3_BUCKET: 'hostmark',
+      S3_REGION: 'us-east-1',
+      S3_ACCESS_KEY_ID: 'k',
+      S3_SECRET_ACCESS_KEY: 's',
+      S3_VIRTUAL_HOST: 'false',
+      PUBLIC_URL: 'http://127.0.0.1:58080',
+    } as Parameters<typeof staticSecurity>[0];
+    expect(staticSecurity(env)).toEqual({
+      publicUrl: 'http://127.0.0.1:58080',
+      storageOrigin: 'http://minio:9000',
+    });
+    expect(staticSecurity({ ...env, S3_PUBLIC_ENDPOINT: 'http://127.0.0.1:59000' }).storageOrigin).toBe(
+      STORAGE,
+    );
+    expect(
+      staticSecurity({ ...env, S3_ENDPOINT: 'https://fly.storage.tigris.dev', S3_VIRTUAL_HOST: 'true' })
+        .storageOrigin,
+    ).toBe('https://hostmark.fly.storage.tigris.dev');
   });
 });

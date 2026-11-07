@@ -6,7 +6,7 @@
   "license": "GPL-3.0-only",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "build": "node scripts/build.mjs",
+    "build": "node --import tsx scripts/build.mjs",
     "bootstrap": "node scripts/bootstrap.mjs",
     "licenses": "node scripts/licenses.mjs",
     "check": "node --import tsx scripts/check-config.ts",
@@ -30,6 +30,7 @@
     "@hostmark/core": "workspace:*",
     "@hostmark/db": "workspace:*",
     "@hostmark/image": "workspace:*",
+    "@hostmark/pages": "workspace:*",
     "@hostmark/storage-s3": "workspace:*",
     "@hostmark/telemetry": "workspace:*",
     "esbuild": "0.28.2",

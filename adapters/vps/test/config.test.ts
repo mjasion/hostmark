@@ -100,6 +100,11 @@ describe('Caddyfile', () => {
     const app = read('Caddyfile').split('{$S3_DOMAIN}')[0] ?? '';
     expect(app).toMatch(/^\s*encode zstd gzip$/m);
   });
+
+  it('adds no response header: the app sends the security headers and HSTS itself, once (D310)', () => {
+    // `header_up` changes the request to the api; a `header` directive would set or repeat a response header.
+    expect(read('Caddyfile')).not.toMatch(/^\s*header\s/m);
+  });
 });
 
 describe('.env.example', () => {

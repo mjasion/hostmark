@@ -7,8 +7,12 @@
 // Before `vercel deploy` the database is migrated and seeded from this machine (scripts/prepare-database.ts, D277): the
 // seed keys come from SEED_API_KEY and SEED_ADMIN_API_KEY, are never generated or printed, and are not project
 // variables, because no function reads them.
+// The build reads a copy of vercel.json with the HTML Content-Security-Policy added (scripts/security-headers.ts,
+// D310): the policy names the origin of the presigned URLs, from the same S3 variables the functions presign with.
 import { spawnSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
@@ -32,6 +36,8 @@ const SECRETS = [
 /** Secrets this script uses itself and does not store on the project. */
 const LOCAL = ['VERCEL_TOKEN', 'SEED_API_KEY', 'SEED_ADMIN_API_KEY'];
 const PLAIN = ['PUBLIC_URL', 'S3_ENDPOINT', 'S3_BUCKET'];
+/** Plain variables stored only when set. S3_PUBLIC_ENDPOINT changes the presigned origin, so the policy must match. */
+const OPTIONAL_PLAIN = ['S3_PUBLIC_ENDPOINT'];
 const IDS = ['VERCEL_ORG_ID', 'VERCEL_PROJECT_ID'];
 const missing = [...SECRETS, ...PLAIN, ...IDS].filter((name) => !process.env[name]);
 if (missing.length && !dry) {
@@ -59,6 +65,9 @@ function run(cmd, args, input, cwd = root) {
   if (result.status !== 0) throw new DeployError(`${cmd} exited with ${result.status}`, result.status ?? 1);
 }
 
+const scratch = dry ? join(tmpdir(), 'hm-vercel-XXXXXX') : mkdtempSync(join(tmpdir(), 'hm-vercel-'));
+const config = join(scratch, 'vercel.json');
+
 try {
   // 1. Offline checks of vercel.json.
   run(process.execPath, ['--import', 'tsx', 'scripts/check-config.ts'], undefined, adapter);
@@ -67,6 +76,7 @@ try {
   const vars = [
     ...SECRETS.filter((n) => !LOCAL.includes(n)).map((n) => [n, '--sensitive']),
     ...PLAIN.map((n) => [n, '--no-sensitive']),
+    ...OPTIONAL_PLAIN.filter((n) => process.env[n]).map((n) => [n, '--no-sensitive']),
   ];
   for (const [name, flag] of vars)
     run('vercel', ['env', 'add', name, 'production', flag, '--force', '--yes'], process.env[name] ?? '');
@@ -74,7 +84,8 @@ try {
   // 3. Build, prepare the database, deploy the prebuilt output. A failed build changes no table; the new code goes
   //    live only after its migrations ran. The values reach the script as environment, never argv.
   run('vercel', ['pull', '--yes', '--environment=production']);
-  run('vercel', ['build', '--prod']);
+  run(process.execPath, ['--import', 'tsx', 'scripts/security-headers.ts', config], undefined, adapter);
+  run('vercel', ['build', '--prod', '--local-config', config]);
   run(process.execPath, ['--import', 'tsx', 'scripts/prepare-database.ts'], undefined, adapter);
   run('vercel', ['deploy', '--prebuilt', '--prod']);
   console.log('\nDone.');
@@ -82,4 +93,6 @@ try {
   if (!(error instanceof DeployError)) throw error;
   console.error(error.message);
   process.exitCode = error.code;
+} finally {
+  if (!dry) rmSync(scratch, { recursive: true, force: true });
 }

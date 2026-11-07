@@ -104,12 +104,17 @@ repository holds no real values. The runtime variables are those of `adapters/lo
 `clientIpHeader` is **`X-Client-Ip`**, fixed in `src/platform.ts` (an `AUTH_CLIENT_IP_HEADER` in the environment is
 overwritten). Caddy replaces it on every request with the TCP peer (`header_up X-Client-Ip {remote_host}`), the api
 and MinIO publish no port, and Caddy is the only way in. A client-sent `X-Client-Ip` does not survive: this was run
-against a Caddy 2.10 container with a spoofed value, and the upstream saw the peer address.
+against a Caddy 2.11 container with a spoofed value, and the upstream saw the peer address.
 
 **Cloudflare in front** (spec: optional CDN for the VPS variant): the TCP peer is then a Cloudflare address, so every
 visitor would share three sign-ins per 10 s. Change the Caddy line to
 `header_up X-Client-Ip {http.request.header.CF-Connecting-IP}` and allow only Cloudflare's address ranges on ports 80
 and 443 (firewall), because the header is otherwise client-controlled. Not tested here.
+
+## Security headers (D310)
+
+The app sends them, HSTS included because `PUBLIC_URL` is https (D311). The Caddyfile adds no response header, so
+nothing is sent twice; a test keeps it that way. Answers Caddy makes itself (a 502 after the retry window) carry none.
 
 ## MinIO users (D287)
 
@@ -156,7 +161,7 @@ Longest event loop block against the 60 s lock: **not measured** (needs a real i
 
 ## Checked offline
 
-`docker compose config` resolves with the placeholder values, `caddy validate` accepts the Caddyfile (Caddy 2.10
+`docker compose config` resolves with the placeholder values, `caddy validate` accepts the Caddyfile (Caddy 2.11
 image), and `pnpm --filter @hostmark/adapter-vps test` covers the port contracts, the compose invariants (one
 scheduler, worker limits, no published port besides Caddy, the app's MinIO user and the root pair only for the init
 jobs, the Caddyfile mount), the Caddy retry settings, the Dockerfile against the local one and the deploy script

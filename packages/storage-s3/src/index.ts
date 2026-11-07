@@ -90,13 +90,24 @@ async function snippet(res: Response): Promise<string> {
   }
 }
 
+/** The base of every presigned URL: the public endpoint (else the server one) in the configured URL style. */
+const publicBucketUrl = (
+  options: Pick<S3StorageOptions, 'endpoint' | 'publicEndpoint' | 'bucket' | 'virtualHost'>,
+) => bucketUrl(options.publicEndpoint ?? options.endpoint, options.bucket, options.virtualHost);
+
+/**
+ * The origin every presigned URL of `createS3Storage(options)` points to: what a browser connects to for uploads and
+ * loads thumbnails from, and so the storage source of the web app's Content-Security-Policy (D310).
+ */
+export function presignedOrigin(
+  options: Pick<S3StorageOptions, 'endpoint' | 'publicEndpoint' | 'bucket' | 'virtualHost'>,
+): string {
+  return new URL(publicBucketUrl(options)).origin;
+}
+
 export function createS3Storage(options: S3StorageOptions): ObjectStorage {
   const base = bucketUrl(options.endpoint, options.bucket, options.virtualHost);
-  const publicBase = bucketUrl(
-    options.publicEndpoint ?? options.endpoint,
-    options.bucket,
-    options.virtualHost,
-  );
+  const publicBase = publicBucketUrl(options);
   const doFetch = options.fetch ?? ((input: Request) => fetch(input));
   const cache = new Map<string, ArrayBuffer>();
   const client = new AwsClient({

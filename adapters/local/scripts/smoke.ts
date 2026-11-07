@@ -4,11 +4,14 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
+  API_CSP,
   ApiError,
   type Chaos,
+  COMMON_SECURITY_HEADERS,
   createClient,
   DLQ_NAME,
   type FileResponse,
+  HTML_SECURITY_HEADERS,
   originalKey,
   type SCHEDULER_JOBS,
   VARIANT_SIZES,
@@ -521,6 +524,71 @@ await step('public file: /media serves immutable headers, 404 after unpublishing
   const after = await fetch(media);
   assert(after.status === 404, `unpublished file answered ${after.status}`);
   return `200 with "${cache}", then 404`;
+});
+
+// D310: the security headers of every kind of answer. The stack is plain HTTP, so there is no HSTS anywhere.
+await step('security headers on HTML, the API, /media, /f, assets and a 404, no HSTS over http', async () => {
+  await user.updateFile(readyFileId, { isPublic: true });
+  // The storage origin the HTML policy must allow is the one the API presigns with.
+  const file = await user.getFile(readyFileId);
+  const storage = new URL(file.variants[0]?.url ?? '').origin;
+  const headersOf = async (path: string) => {
+    const res = await fetch(`${API_URL}${path}`);
+    await res.arrayBuffer();
+    return { status: res.status, get: (name: string) => res.headers.get(name) };
+  };
+  const problems: string[] = [];
+  const expectHeader = (path: string, got: string | null, name: string, want: string | null) => {
+    if (got !== want) problems.push(`${path}: ${name} is ${got ?? '(none)'}, expected ${want ?? '(none)'}`);
+  };
+  const shell = await headersOf('/app');
+  const asset =
+    /\/assets\/[^"]+\.js/.exec(await (await fetch(`${API_URL}/app`)).text())?.[0] ?? '/assets/missing.js';
+  const paths: [string, 'html' | 'api' | 'share' | 'other', number][] = [
+    ['/', 'html', 200],
+    ['/pricing', 'html', 200],
+    ['/app', 'html', 200],
+    ['/login', 'html', 200],
+    ['/api/health', 'api', 200],
+    ['/api/nope', 'api', 404],
+    [`/media/${readyFileId}/512.webp`, 'other', 200],
+    [`/f/${readyFileId}`, 'share', 200],
+    [asset, 'other', 200],
+    ['/rum.js', 'other', 200],
+    ['/robots.txt', 'other', 200],
+    ['/nope', 'other', 404],
+    ['/assets/missing.js', 'other', 404],
+  ];
+  for (const [path, kind, status] of paths) {
+    const res = path === '/app' ? shell : await headersOf(path);
+    if (res.status !== status) problems.push(`${path}: status ${res.status}, expected ${status}`);
+    expectHeader(path, res.get('x-content-type-options'), 'x-content-type-options', 'nosniff');
+    expectHeader(
+      path,
+      res.get('referrer-policy'),
+      'referrer-policy',
+      kind === 'share' ? 'same-origin' : COMMON_SECURITY_HEADERS['referrer-policy'],
+    );
+    expectHeader(path, res.get('strict-transport-security'), 'strict-transport-security', null);
+    for (const [name, value] of Object.entries(HTML_SECURITY_HEADERS))
+      expectHeader(path, res.get(name), name, kind === 'html' ? value : null);
+    const csp = res.get('content-security-policy');
+    if (kind === 'api') expectHeader(path, csp, 'content-security-policy', API_CSP);
+    if (kind === 'other') expectHeader(path, csp, 'content-security-policy', null);
+    if (kind === 'share' && (!csp?.includes("frame-ancestors 'none'") || /unsafe-inline/.test(csp)))
+      problems.push(`${path}: share policy is ${csp}`);
+    if (
+      kind === 'html' &&
+      (!csp?.includes(`connect-src 'self' ${storage};`) ||
+        !csp.includes(`img-src 'self' data: ${storage};`) ||
+        /unsafe-inline/.test(csp) ||
+        !/style-src 'self' 'sha256-[A-Za-z0-9+/=]+';/.test(csp))
+    )
+      problems.push(`${path}: HTML policy is ${csp}, storage ${storage}`);
+  }
+  await user.updateFile(readyFileId, { isPublic: false });
+  assert(problems.length === 0, problems.join('; '));
+  return `${paths.length} paths, storage ${storage} allowed, no HSTS`;
 });
 
 await step('trace: complete request and worker run are connected', async () => {

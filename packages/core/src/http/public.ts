@@ -1,5 +1,12 @@
-import { RUM_PLATFORMS, RUM_REGIONS, RUM_TOPOLOGIES, RUM_VARIANTS, VARIANT_SIZES } from '@hostmark/contract';
-import type { PublicFile, PublicFileUrls, RumAttributes } from '@hostmark/pages';
+import {
+  RUM_PLATFORMS,
+  RUM_REGIONS,
+  RUM_TOPOLOGIES,
+  RUM_VARIANTS,
+  securityHeaders,
+  VARIANT_SIZES,
+} from '@hostmark/contract';
+import { type PublicFile, type PublicFileUrls, type RumAttributes, STYLE_HASHES } from '@hostmark/pages';
 import type { Context } from 'hono';
 import type { AppConfig } from '../deps';
 import type { HttpEnv } from './context';
@@ -8,11 +15,12 @@ import type { HttpEnv } from './context';
 export const PUBLIC_PAGE_CACHE = 's-maxage=60, stale-while-revalidate=600';
 
 /**
- * Inline styles only; the one script is same-origin. A defence in depth in case escaping ever fails, and a
- * `frame-ancestors` guard so nobody frames a share page.
+ * The share page's own headers (D82, D310): a CSP that allows the inline style by its hash and the one same-origin
+ * script, a defence in depth in case escaping ever fails, with a `frame-ancestors` guard so nobody frames the page;
+ * `nosniff`; and the `same-origin` referrer policy. HSTS is added by the middleware of `createApp`, which knows the
+ * scheme.
  */
-const CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const SHARE_HEADERS = securityHeaders('share', { https: false, styleHashes: STYLE_HASHES });
 
 const pick = <T extends string>(list: readonly T[], value: string | undefined, fallback: T): T =>
   list.find((item) => item === value) ?? fallback;
@@ -100,9 +108,7 @@ export function htmlResponse(status: number, html: string, cacheControl: string)
     headers: {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': cacheControl,
-      'content-security-policy': CSP,
-      'x-content-type-options': 'nosniff',
-      'referrer-policy': 'same-origin',
+      ...SHARE_HEADERS,
       'x-robots-tag': 'noindex',
     },
   });

@@ -51,6 +51,7 @@ import { probe } from './health';
 import { problemResponse, randomTraceId } from './problem';
 import { htmlResponse, PUBLIC_PAGE_CACHE, pageModel, pageOrigin, rumAttributes } from './public';
 import { publicPaths } from './purge';
+import { missingSecurityHeaders, withSecurityHeaders } from './security';
 
 /** D6: a variant never changes under its URL. */
 export const MEDIA_CACHE = 'public, max-age=31536000, immutable';
@@ -136,7 +137,7 @@ export function createApp(
   // Last good platform and version, so the D9 headers survive a failing `resolveDeps`.
   let knownHeaders: Record<string, string> = {};
 
-  // Server span, request metric, cold start flag and the headers of D9 on every response, errors included.
+  // Server span, request metric, cold start flag and the headers of D9 and D310 on every response, errors included.
   const observe: MiddlewareHandler<HttpEnv> = async (c, next) => {
     let deps: CoreDeps;
     try {
@@ -155,7 +156,8 @@ export function createApp(
       const res = problemResponse(c, 500, 'Internal Server Error', 'An unexpected error occurred');
       for (const [k, v] of Object.entries(knownHeaders)) res.headers.set(k, v);
       res.headers.set('cache-control', c.req.path.startsWith('/api/') ? 'private, no-store' : 'no-store');
-      c.res = res;
+      // D310: without a configuration, HSTS follows the request's scheme.
+      c.res = withSecurityHeaders(res, c.req.raw);
       return;
     }
     c.set('deps', deps);
@@ -191,6 +193,8 @@ export function createApp(
             'http.response.status_code': status,
           });
           const headers: Record<string, string> = {
+            // D310: the common set, HSTS over HTTPS and the API's policy, where the route did not choose its own.
+            ...missingSecurityHeaders(c.res, c.req.raw, deps.config.publicUrl),
             [HEADER_TRACE_ID]: traceId,
             [HEADER_PLATFORM]: deps.config.platform,
             [HEADER_VERSION]: deps.config.version,

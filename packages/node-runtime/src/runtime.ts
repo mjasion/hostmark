@@ -4,7 +4,7 @@ import type { Clock } from '@hostmark/core/ports';
 import { createNodeDb } from '@hostmark/db/node';
 import { createWasmImageProcessor } from '@hostmark/image';
 import { nodeLoader } from '@hostmark/image/node';
-import { createS3Storage } from '@hostmark/storage-s3';
+import { createS3Storage, presignedOrigin, type S3StorageOptions } from '@hostmark/storage-s3';
 import { createTelemetry, type Telemetry } from '@hostmark/telemetry';
 import { type NodeTelemetry, startNodeTelemetry } from '@hostmark/telemetry/node';
 import type { Env } from './env';
@@ -18,8 +18,8 @@ export const systemClock: Clock = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
-export function createStorage(env: RuntimeEnv) {
-  return createS3Storage({
+function storageOptions(env: RuntimeEnv): S3StorageOptions {
+  return {
     endpoint: env.S3_ENDPOINT,
     publicEndpoint: env.S3_PUBLIC_ENDPOINT,
     bucket: env.S3_BUCKET,
@@ -27,7 +27,19 @@ export function createStorage(env: RuntimeEnv) {
     accessKeyId: env.S3_ACCESS_KEY_ID,
     secretAccessKey: env.S3_SECRET_ACCESS_KEY,
     virtualHost: env.S3_VIRTUAL_HOST === 'true',
-  });
+  };
+}
+
+export function createStorage(env: RuntimeEnv) {
+  return createS3Storage(storageOptions(env));
+}
+
+/**
+ * D310: what the static handler needs for the security headers: the public URL (HSTS when it is https) and the origin
+ * of the presigned URLs, from the same settings the storage presigns with, for the HTML policy.
+ */
+export function staticSecurity(env: RuntimeEnv): { publicUrl?: string; storageOrigin: string } {
+  return { publicUrl: env.PUBLIC_URL, storageOrigin: presignedOrigin(storageOptions(env)) };
 }
 
 export interface Runtime<E extends RuntimeEnv = Env, Q extends RuntimeQueue = RuntimeQueue> {

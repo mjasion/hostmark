@@ -66,6 +66,15 @@ describe('origin secret', () => {
     deps: { telemetry: createTelemetry('api'), config: { platform: 'aws-portable', version: 't' } } as never,
   }));
   it('refuses a request that did not come through CloudFront', async () => {
+    const refused = await app.request('https://fn.example/api/health');
+    expect(refused.status).toBe(403);
+    // D310: built before core, with its headers all the same.
+    expect(Object.fromEntries(refused.headers)).toMatchObject({
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'strict-origin-when-cross-origin',
+      'content-security-policy': "default-src 'none'; frame-ancestors 'none'",
+      'strict-transport-security': 'max-age=31536000',
+    });
     expect((await app.request('/media/x/orig.jpg')).status).toBe(403);
     expect(
       (await app.request('/media/x/orig.jpg', { headers: { 'x-hostmark-origin-secret': 'no' } })).status,
@@ -81,6 +90,7 @@ describe('origin secret', () => {
     });
     const res = await broken.request('/api/health');
     expect(res.status).toBe(500);
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(await res.text()).not.toContain('Invalid environment');
   });
 });

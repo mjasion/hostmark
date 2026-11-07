@@ -1,12 +1,23 @@
 // Offline checks of template.yaml: no AWS API is called. cfn-lint was not available in this environment, so the checks
 // below cover what has gone wrong in practice (dangling references, drift from the contract constants, missing
 // settings) and nothing more: `aws cloudformation validate-template` and cfn-lint remain for the owner (README).
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
-import { BACKOFF_SECONDS, MAX_ATTEMPTS, SCHEDULER_JOBS, SSE_MAX_DURATION_MS } from '@hostmark/contract';
+import {
+  BACKOFF_SECONDS,
+  COMMON_SECURITY_HEADERS,
+  HSTS_SECONDS,
+  HTML_SECURITY_HEADERS,
+  htmlCsp,
+  MAX_ATTEMPTS,
+  SCHEDULER_JOBS,
+  SSE_MAX_DURATION_MS,
+} from '@hostmark/contract';
+import { STYLE_HASHES } from '@hostmark/pages/styles';
+import { presignedOrigin } from '@hostmark/storage-s3';
 import { type CollectionTag, parse, type ScalarTag } from 'yaml';
-import { varsSchema } from '../src/env';
+import { s3Endpoint, varsSchema } from '../src/env';
 
 export const templatePath = fileURLToPath(new URL('../template.yaml', import.meta.url));
 const coreAppPath = fileURLToPath(new URL('../../../packages/core/src/http/app.ts', import.meta.url));
@@ -315,6 +326,123 @@ export function checkTemplate(template = loadTemplate()): string[] {
   // CustomErrorResponses apply to every behavior and would rewrite the api's own statuses.
   if (config.CustomErrorResponses !== undefined)
     problems.push('No CustomErrorResponses: they would also rewrite the api responses');
+  problems.push(...checkSecurityHeaders(template));
+  return problems;
+}
+
+const webPublic = fileURLToPath(new URL('../../../apps/web/public', import.meta.url));
+
+/**
+ * The static files that are not HTML and are served from the root or `/assets/`: each needs a behavior with the common
+ * headers only (D310), else the default behavior gives it the HTML set. `rum.js` is a build output (D85); the rest is
+ * what Vite copies from apps/web/public.
+ */
+export function staticFilePatterns(publicDir = webPublic): string[] {
+  return ['/assets/*', '/rum.js', ...readdirSync(publicDir).map((f) => `/${f}`)].sort();
+}
+
+/** `!Sub` text of the HTML policy with the region filled in, as CloudFront would see it in `region`. */
+const subIn = (value: Json, region: string) =>
+  String((value as Node | undefined)?.['Fn::Sub'] ?? '').replace(/\$\{AWS::Region\}/g, region);
+
+/**
+ * D310 against the contract: the HTML policy (its storage origin derived the way the functions presign, its style
+ * hashes from packages/pages), the common set and HSTS without includeSubDomains or preload on every policy, the HTML
+ * extras on the HTML policy only, and which behavior uses which policy.
+ */
+export function checkSecurityHeaders(template: Node, publicDir = webPublic): string[] {
+  const problems: string[] = [];
+  const resources = (template.Resources ?? {}) as Record<string, Node>;
+  const policy = (name: string) =>
+    ((resources[name]?.Properties as Node | undefined)?.ResponseHeadersPolicyConfig ?? {}) as Node;
+  const security = (name: string) => (policy(name).SecurityHeadersConfig ?? {}) as Record<string, Node>;
+
+  const region = 'eu-central-1';
+  const storageOrigin = presignedOrigin({ endpoint: s3Endpoint({ AWS_REGION: region }), bucket: 'hostmark' });
+  const csp = security('SiteHtmlHeadersPolicy').ContentSecurityPolicy;
+  if (
+    subIn(csp?.ContentSecurityPolicy ?? null, region) !==
+    htmlCsp({ storageOrigin, styleHashes: STYLE_HASHES })
+  )
+    problems.push(
+      'SiteHtmlHeadersPolicy: the Content-Security-Policy differs from htmlCsp of the contract (D310)',
+    );
+  for (const fn of ['ApiFunction', 'WorkerFunction', 'SchedulerFunction']) {
+    const vars = ((resources[fn]?.Properties as Node | undefined)?.Environment as Node | undefined)
+      ?.Variables as Node | undefined;
+    if (vars && ('S3_ENDPOINT' in vars || 'S3_PUBLIC_ENDPOINT' in vars))
+      problems.push(`${fn}: an S3 endpoint changes the presigned origin, which the HTML policy names (D310)`);
+  }
+
+  for (const [name, override] of [
+    ['SiteHtmlHeadersPolicy', true],
+    ['SiteHeadersPolicy', true],
+    ['AppHeadersPolicy', false],
+  ] as const) {
+    const s = security(name);
+    if (s.ContentTypeOptions?.Override !== override)
+      problems.push(`${name}: X-Content-Type-Options with Override ${override}`);
+    if (
+      s.ReferrerPolicy?.ReferrerPolicy !== COMMON_SECURITY_HEADERS['referrer-policy'] ||
+      s.ReferrerPolicy?.Override !== override
+    )
+      problems.push(
+        `${name}: Referrer-Policy ${COMMON_SECURITY_HEADERS['referrer-policy']}, Override ${override}`,
+      );
+    const hsts = s.StrictTransportSecurity;
+    if (
+      hsts?.AccessControlMaxAgeSec !== HSTS_SECONDS ||
+      hsts.IncludeSubdomains !== false ||
+      hsts.Preload !== false ||
+      hsts.Override !== override
+    )
+      problems.push(
+        `${name}: HSTS max-age ${HSTS_SECONDS} without includeSubDomains or preload, Override ${override}`,
+      );
+    const html = name === 'SiteHtmlHeadersPolicy';
+    if (!html && (s.ContentSecurityPolicy || s.FrameOptions || policy(name).CustomHeadersConfig))
+      problems.push(`${name}: only the common headers (D310)`);
+    if (html) {
+      if (s.FrameOptions?.FrameOption !== HTML_SECURITY_HEADERS['x-frame-options'] || csp?.Override !== true)
+        problems.push(`${name}: X-Frame-Options DENY and the policy, both with Override true`);
+      const custom = (((policy(name).CustomHeadersConfig as Node | undefined)?.Items ?? []) as Node[]).map(
+        (i) => [String(i.Header).toLowerCase(), i.Value, i.Override],
+      );
+      const want = Object.entries(HTML_SECURITY_HEADERS)
+        .filter(([h]) => h !== 'x-frame-options')
+        .map(([h, v]) => [h, v, true]);
+      if (JSON.stringify(custom) !== JSON.stringify(want))
+        problems.push(`${name}: custom headers must be exactly ${JSON.stringify(want)}`);
+    }
+  }
+
+  const config = (resources.Distribution?.Properties as Node | undefined)?.DistributionConfig as
+    | Node
+    | undefined;
+  const ref = (behavior: Node | undefined) => (behavior?.ResponseHeadersPolicyId as Node | undefined)?.Ref;
+  const defaults = config?.DefaultCacheBehavior as Node | undefined;
+  if (ref(defaults) !== 'SiteHtmlHeadersPolicy')
+    problems.push('The default behavior (the HTML documents) must use SiteHtmlHeadersPolicy');
+  const behaviors = (config?.CacheBehaviors ?? []) as Node[];
+  for (const pattern of ['/api/*', '/media/*', '/f/*'])
+    if (ref(behaviors.find((b) => b.PathPattern === pattern)) !== 'AppHeadersPolicy')
+      problems.push(`${pattern} must use AppHeadersPolicy`);
+  const staticBehaviors = behaviors.filter((b) => ref(b) === 'SiteHeadersPolicy');
+  const patterns = staticBehaviors.map((b) => String(b.PathPattern)).sort();
+  if (JSON.stringify(patterns) !== JSON.stringify(staticFilePatterns(publicDir)))
+    problems.push(
+      `SiteHeadersPolicy behaviors must be exactly ${staticFilePatterns(publicDir).join(', ')}, are ${patterns.join(', ')}`,
+    );
+  for (const b of staticBehaviors)
+    for (const key of [
+      'TargetOriginId',
+      'CachePolicyId',
+      'ViewerProtocolPolicy',
+      'AllowedMethods',
+      'Compress',
+    ])
+      if (JSON.stringify(b[key]) !== JSON.stringify(defaults?.[key]))
+        problems.push(`${b.PathPattern}: ${key} must be the default behavior's`);
   return problems;
 }
 

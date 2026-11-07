@@ -610,6 +610,70 @@ Resources:
           CookiesConfig: { CookieBehavior: none }
           QueryStringsConfig: { QueryStringBehavior: none }
 
+  # D310: security headers. CloudFront writes them, so a response from S3 or an error CloudFront makes carries them.
+  # The HTML documents (the default behavior: /, /pricing, the panel shell) get the full set. The policy names the origin
+  # of the presigned URLs (path-style S3 of this region, `s3Endpoint` of src/env.ts) and the hash of the pages' inline
+  # style (CSS_HASH of packages/pages); `pnpm check` compares the value with the contract and both sources.
+  SiteHtmlHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-site-html"
+        Comment: hostmark HTML documents (D310)
+        SecurityHeadersConfig:
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: !Sub "default-src 'self'; script-src 'self'; style-src 'self' 'sha256-j32VbnCSOf7Lz2RkhmnZxgGNSuXeXyjyU5hgjrvaRiM='; img-src 'self' data: https://s3.${AWS::Region}.amazonaws.com; connect-src 'self' https://s3.${AWS::Region}.amazonaws.com; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+            Override: true
+          ContentTypeOptions: { Override: true }
+          FrameOptions: { FrameOption: DENY, Override: true }
+          ReferrerPolicy: { ReferrerPolicy: strict-origin-when-cross-origin, Override: true }
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: false
+            Preload: false
+            Override: true
+        CustomHeadersConfig:
+          Items:
+            - { Header: Cross-Origin-Opener-Policy, Value: same-origin, Override: true }
+            - {
+                Header: Permissions-Policy,
+                Value: "camera=(), microphone=(), geolocation=(), payment=()",
+                Override: true,
+              }
+
+  # Every other static file (/assets/*, /rum.js, /robots.txt, /favicon.svg): the common set only.
+  SiteHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-site"
+        Comment: hostmark static files (D310)
+        SecurityHeadersConfig:
+          ContentTypeOptions: { Override: true }
+          ReferrerPolicy: { ReferrerPolicy: strict-origin-when-cross-origin, Override: true }
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: false
+            Preload: false
+            Override: true
+
+  # /api, /media and /f: the app sets the headers itself (core); this only fills in what an answer lacks, such as an
+  # error CloudFront makes up when the function URL fails. Override false keeps the app's values (`same-origin` on /f).
+  AppHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-app"
+        Comment: hostmark api fallback (D310)
+        SecurityHeadersConfig:
+          ContentTypeOptions: { Override: false }
+          ReferrerPolicy: { ReferrerPolicy: strict-origin-when-cross-origin, Override: false }
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: false
+            Preload: false
+            Override: false
+
   Distribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -654,13 +718,45 @@ Resources:
           ViewerProtocolPolicy: redirect-to-https
           AllowedMethods: [GET, HEAD]
           CachePolicyId: !Ref SiteCachePolicy
+          ResponseHeadersPolicyId: !Ref SiteHtmlHeadersPolicy
           Compress: true
           FunctionAssociations:
             - { EventType: viewer-request, FunctionARN: !GetAtt SiteFunction.FunctionARN }
         CacheBehaviors:
+          # D310: the static files that are not HTML, so that they get the common headers only. They need no site
+          # function (it leaves a path with a dot alone). `pnpm check` lists the root files of the web build against them.
+          - PathPattern: /assets/*
+            TargetOriginId: site
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachePolicyId: !Ref SiteCachePolicy
+            ResponseHeadersPolicyId: !Ref SiteHeadersPolicy
+            Compress: true
+          - PathPattern: /rum.js
+            TargetOriginId: site
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachePolicyId: !Ref SiteCachePolicy
+            ResponseHeadersPolicyId: !Ref SiteHeadersPolicy
+            Compress: true
+          - PathPattern: /robots.txt
+            TargetOriginId: site
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachePolicyId: !Ref SiteCachePolicy
+            ResponseHeadersPolicyId: !Ref SiteHeadersPolicy
+            Compress: true
+          - PathPattern: /favicon.svg
+            TargetOriginId: site
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachePolicyId: !Ref SiteCachePolicy
+            ResponseHeadersPolicyId: !Ref SiteHeadersPolicy
+            Compress: true
           - PathPattern: /api/*
             TargetOriginId: api
             ViewerProtocolPolicy: redirect-to-https
+            ResponseHeadersPolicyId: !Ref AppHeadersPolicy
             AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
             # Managed CachingDisabled and AllViewerExceptHostHeader (the function URL needs its own Host).
             CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
@@ -672,12 +768,14 @@ Resources:
           - PathPattern: /media/*
             TargetOriginId: api
             ViewerProtocolPolicy: redirect-to-https
+            ResponseHeadersPolicyId: !Ref AppHeadersPolicy
             AllowedMethods: [GET, HEAD]
             CachePolicyId: !Ref MediaCachePolicy
             Compress: true
           - PathPattern: /f/*
             TargetOriginId: api
             ViewerProtocolPolicy: redirect-to-https
+            ResponseHeadersPolicyId: !Ref AppHeadersPolicy
             AllowedMethods: [GET, HEAD]
             CachePolicyId: !Ref MediaCachePolicy
             Compress: true

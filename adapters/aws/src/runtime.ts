@@ -8,7 +8,7 @@ import { createS3Storage } from '@hostmark/storage-s3';
 import { createTelemetry, type Telemetry } from '@hostmark/telemetry';
 import { startNodeTelemetry } from '@hostmark/telemetry/node';
 import postgres from 'postgres';
-import { CLIENT_IP_HEADER, parseVars, type Vars } from './env';
+import { CLIENT_IP_HEADER, parseVars, s3Endpoint, type Vars } from './env';
 import { createCloudFrontPurger } from './purge';
 import { createSqsQueue } from './queue';
 
@@ -171,7 +171,7 @@ export function createRuntime(source: Record<string, unknown>, options: RuntimeO
   const deps: CoreDeps = {
     db,
     storage: createS3Storage({
-      endpoint: vars.S3_ENDPOINT ?? `https://s3.${vars.AWS_REGION}.amazonaws.com`,
+      endpoint: s3Endpoint(vars),
       publicEndpoint: vars.S3_PUBLIC_ENDPOINT,
       bucket: vars.S3_BUCKET,
       region: vars.AWS_REGION,

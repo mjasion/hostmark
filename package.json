@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "license": "GPL-3.0-only",
-  "packageManager": "pnpm@12.15.0",
+  "packageManager": "pnpm@12.18.0",
   "engines": {
     "node": ">=22"
   },
@@ -12,7 +12,7 @@
     "typecheck:load": "tsc -p load/playwright --noEmit",
     "test": "vitest run && pnpm test:load && pnpm test:platform && pnpm test:pipeline",
     "test:load": "node --test load/test/*.test.mjs",
-    "test:platform": "node --test tools/platform/*.test.mjs",
+    "test:platform": "node --test tools/platform/*.test.mjs tools/deps/*.test.mjs",
     "test:pipeline": "node --test adapters/cloudflare/pipeline/test/*.test.mjs",
     "platform": "node tools/platform/cli.mjs",
     "lint": "biome check .",

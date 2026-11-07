@@ -8,4 +8,5 @@ afterEach(() => {
 });
 
 // jsdom does not implement scrolling; the router calls it on navigation.
-window.scrollTo = () => {};
+// Guarded: a test that builds the app runs in the node environment (csp.test.ts).
+if (typeof window !== 'undefined') window.scrollTo = () => {};

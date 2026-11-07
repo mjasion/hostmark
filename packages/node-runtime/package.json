@@ -32,6 +32,7 @@
     "@hostmark/core": "workspace:*",
     "@hostmark/db": "workspace:*",
     "@hostmark/image": "workspace:*",
+    "@hostmark/pages": "workspace:*",
     "@hostmark/storage-s3": "workspace:*",
     "@hostmark/telemetry": "workspace:*",
     "@jsquash/jpeg": "1.6.0",

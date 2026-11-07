@@ -33,6 +33,7 @@
     "@hostmark/db": "workspace:*",
     "@hostmark/image": "workspace:*",
     "@hostmark/node-runtime": "workspace:*",
+    "@hostmark/pages": "workspace:*",
     "@hostmark/storage-s3": "workspace:*",
     "@hostmark/telemetry": "workspace:*",
     "aws4fetch": "1.0.20",

@@ -1,5 +1,7 @@
 # TLS terminates here (automatic certificates). The api and MinIO publish no port: Caddy is the only way in, which
 # is what makes X-Client-Ip trustworthy.
+# No `header` directive: the app sends the security headers, HSTS included, because PUBLIC_URL is https (D310); a
+# second source would repeat them.
 {$APP_DOMAIN} {
 	# Compress text responses like the CDNs of the other platforms do (S10, D208). Caddy's default matcher leaves
 	# images alone, and the WebP variants are compressed already.

@@ -70,7 +70,7 @@ services:
     restart: unless-stopped
     # Chainguard's build of MinIO, pinned by digest (the one adapters/local uses). Check before enabling the platform
     # that the image is still maintained and the digest current (README, "MinIO image"; D288).
-    image: &minio-image cgr.dev/chainguard/minio@sha256:3b6e40c30ecd5cea627e382ff0b82ca841f58c52294578787043ee80c8ef7c82
+    image: &minio-image cgr.dev/chainguard/minio@sha256:3c60a2a8c4d33409a9bc7a623a7fcbfb4605adc3d89422d2f53b3f673a6e5597
     command: ["server", "/data"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}

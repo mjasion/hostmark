@@ -1,5 +1,5 @@
 import type { ObjectStorage } from '@hostmark/core/ports';
-import { createS3Storage } from '@hostmark/storage-s3';
+import { createS3Storage, presignedOrigin } from '@hostmark/storage-s3';
 
 export interface R2StorageOptions {
   bucket: R2Bucket;
@@ -14,15 +14,28 @@ export interface R2StorageOptions {
 
 const DELETE_BATCH = 1000;
 
+/** The endpoint presigned URLs are built on: the account's S3 origin unless `publicEndpoint` replaces it. */
+const presignEndpoint = (options: Pick<R2StorageOptions, 'accountId' | 'publicEndpoint'>) =>
+  options.publicEndpoint ?? `https://${options.accountId}.r2.cloudflarestorage.com`;
+
+/**
+ * The origin of every presigned URL of `createR2Storage(options)`: the storage source of the web app's CSP (D310). The
+ * Worker uses it for the panel shell and `scripts/build.mjs` for the prerendered pages, from the same vars.
+ */
+export function r2PresignedOrigin(
+  options: Pick<R2StorageOptions, 'accountId' | 'bucketName' | 'publicEndpoint'>,
+): string {
+  return presignedOrigin({ endpoint: presignEndpoint(options), bucket: options.bucketName });
+}
+
 /**
  * Reads and writes go through the R2 binding: no signing, no subrequest to the S3 endpoint. Presigned URLs are the one
  * thing a binding cannot make, so those come from `@hostmark/storage-s3` against the account's S3 origin (R2 presigns
  * work on that origin only, not on a custom domain).
  */
 export function createR2Storage(options: R2StorageOptions): ObjectStorage {
-  const origin = options.publicEndpoint ?? `https://${options.accountId}.r2.cloudflarestorage.com`;
   const signer = createS3Storage({
-    endpoint: origin,
+    endpoint: presignEndpoint(options),
     bucket: options.bucketName,
     region: 'auto',
     accessKeyId: options.accessKeyId,
