@@ -20,10 +20,10 @@
     "@jsquash/png": "3.1.1",
     "@jsquash/resize": "2.1.1",
     "@jsquash/webp": "1.5.0",
-    "@vercel/functions": "3.10.6",
+    "@vercel/functions": "3.11.0",
     "@vercel/queue": "0.11.0",
-    "hono": "4.13.16",
-    "postgres": "4.0.0",
+    "hono": "4.13.17",
+    "postgres": "4.1.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
