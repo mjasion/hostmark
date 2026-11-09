@@ -21,8 +21,8 @@
     "@hostmark/image": "workspace:*",
     "@hostmark/node-runtime": "workspace:*",
     "@hostmark/storage-s3": "workspace:*",
-    "bullmq": "6.6.0",
-    "postgres": "4.0.0",
+    "bullmq": "6.7.2",
+    "postgres": "4.1.0",
     "tsx": "4.23.15"
   }
 }

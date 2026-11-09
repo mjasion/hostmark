@@ -30,7 +30,7 @@
     "@hostmark/telemetry": "workspace:*",
     "aws4fetch": "1.0.20",
     "esbuild": "0.28.2",
-    "hono": "4.13.16",
+    "hono": "4.13.17",
     "tsx": "4.23.15",
     "zod": "4.6.7"
   }

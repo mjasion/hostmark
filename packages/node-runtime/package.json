@@ -37,12 +37,12 @@
     "@hostmark/telemetry": "workspace:*",
     "@jsquash/jpeg": "1.6.0",
     "aws4fetch": "1.0.20",
-    "bullmq": "6.6.0",
+    "bullmq": "6.7.2",
     "croner": "11.0.0",
     "esbuild": "0.28.2",
-    "hono": "4.13.16",
+    "hono": "4.13.17",
     "ioredis": "6.0.0",
-    "postgres": "4.0.0",
+    "postgres": "4.1.0",
     "tsx": "4.23.15",
     "zod": "4.6.7"
   }

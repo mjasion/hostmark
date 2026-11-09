@@ -1065,7 +1065,7 @@ SOFTWARE.
 
 ----------------------------------------
 
-@better-auth/core@1.7.17 (MIT)
+@better-auth/core@1.7.18 (MIT)
 
 The MIT License (MIT)
 Copyright (c) 2024 - present, Bereket Engida
@@ -1090,7 +1090,7 @@ DEALINGS IN THE SOFTWARE.
 
 ----------------------------------------
 
-@better-auth/drizzle-adapter@1.7.17 (MIT)
+@better-auth/drizzle-adapter@1.7.18 (MIT)
 
 The MIT License (MIT)
 Copyright (c) 2024 - present, Bereket Engida
@@ -1115,7 +1115,7 @@ DEALINGS IN THE SOFTWARE.
 
 ----------------------------------------
 
-@better-auth/kysely-adapter@1.7.17 (MIT)
+@better-auth/kysely-adapter@1.7.18 (MIT)
 
 The MIT License (MIT)
 Copyright (c) 2024 - present, Bereket Engida
@@ -1140,7 +1140,7 @@ DEALINGS IN THE SOFTWARE.
 
 ----------------------------------------
 
-@better-auth/memory-adapter@1.7.17 (MIT)
+@better-auth/memory-adapter@1.7.18 (MIT)
 
 The MIT License (MIT)
 Copyright (c) 2024 - present, Bereket Engida
@@ -1165,7 +1165,7 @@ DEALINGS IN THE SOFTWARE.
 
 ----------------------------------------
 
-@better-auth/telemetry@1.7.17 (MIT)
+@better-auth/telemetry@1.7.18 (MIT)
 
 The MIT License (MIT)
 Copyright (c) 2024 - present, Bereket Engida
@@ -2361,7 +2361,7 @@ SOFTWARE.
 
 ----------------------------------------
 
-better-auth@1.7.17 (MIT)
+better-auth@1.7.18 (MIT)
 
 The MIT License (MIT)
 Copyright (c) 2024 - present, Bereket Engida
@@ -2444,7 +2444,7 @@ drizzle-orm@0.45.4 (Apache-2.0)
 
 ----------------------------------------
 
-hono@4.13.16 (MIT)
+hono@4.13.17 (MIT)
 
 MIT License
 
@@ -2470,7 +2470,7 @@ SOFTWARE.
 
 ----------------------------------------
 
-jose@6.2.14 (MIT)
+jose@6.2.16 (MIT)
 
 The MIT License (MIT)
 
@@ -2496,7 +2496,7 @@ SOFTWARE.
 
 ----------------------------------------
 
-kysely@0.29.7 (MIT)
+kysely@0.29.8 (MIT)
 
 The MIT License (MIT)
 
@@ -2522,7 +2522,7 @@ SOFTWARE.
 
 ----------------------------------------
 
-postgres@4.0.0 (Unlicense)
+postgres@4.1.0 (Unlicense)
 
 (the package ships no licence file)
 
