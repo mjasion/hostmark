@@ -213,8 +213,8 @@ importers:
         specifier: 1.0.20
         version: 1.0.20
       hono:
-        specifier: 4.13.16
-        version: 4.13.16
+        specifier: 4.13.17
+        version: 4.13.17
       postgres:
         specifier: 4.0.0
         version: 4.0.0
@@ -280,8 +280,8 @@ importers:
         specifier: 1.0.20
         version: 1.0.20
       hono:
-        specifier: 4.13.16
-        version: 4.13.16
+        specifier: 4.13.17
+        version: 4.13.17
       postgres:
         specifier: 4.0.0
         version: 4.0.0
@@ -373,8 +373,8 @@ importers:
         version: 1.5.0
     devDependencies:
       '@hono/node-server':
-        specifier: 2.1.6
-        version: 2.1.6(hono@4.13.16)
+        specifier: 2.1.7
+        version: 2.1.7(hono@4.13.17)
       '@hostmark/auth':
         specifier: workspace:*
         version: link:../../packages/auth
@@ -406,8 +406,8 @@ importers:
         specifier: 0.28.2
         version: 0.28.2
       hono:
-        specifier: 4.13.16
-        version: 4.13.16
+        specifier: 4.13.17
+        version: 4.13.17
       tsx:
         specifier: 4.23.15
         version: 4.23.15
@@ -495,8 +495,8 @@ importers:
         specifier: 0.11.0
         version: 0.11.0(@opentelemetry/api@1.10.0)
       hono:
-        specifier: 4.13.16
-        version: 4.13.16
+        specifier: 4.13.17
+        version: 4.13.17
       postgres:
         specifier: 4.0.0
         version: 4.0.0
@@ -631,7 +631,7 @@ importers:
     dependencies:
       '@hono/zod-openapi':
         specifier: 1.6.3
-        version: 1.6.3(hono@4.13.16)(zod@4.6.7)
+        version: 1.6.3(hono@4.13.17)(zod@4.6.7)
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -640,7 +640,7 @@ importers:
     dependencies:
       '@hono/zod-openapi':
         specifier: 1.6.3
-        version: 1.6.3(hono@4.13.16)(zod@4.6.7)
+        version: 1.6.3(hono@4.13.17)(zod@4.6.7)
       '@hostmark/contract':
         specifier: workspace:*
         version: link:../contract
@@ -660,8 +660,8 @@ importers:
         specifier: 0.45.4
         version: 0.45.4(@cloudflare/workers-types@5.20261103.1)(@neondatabase/serverless@1.2.0)(@opentelemetry/api@1.10.0)(kysely@0.29.7)(postgres@4.0.0)
       hono:
-        specifier: 4.13.16
-        version: 4.13.16
+        specifier: 4.13.17
+        version: 4.13.17
       uuid:
         specifier: 14.0.3
         version: 14.0.3
@@ -712,8 +712,8 @@ importers:
   packages/node-runtime:
     devDependencies:
       '@hono/node-server':
-        specifier: 2.1.6
-        version: 2.1.6(hono@4.13.16)
+        specifier: 2.1.7
+        version: 2.1.7(hono@4.13.17)
       '@hostmark/auth':
         specifier: workspace:*
         version: link:../auth
@@ -754,8 +754,8 @@ importers:
         specifier: 0.28.2
         version: 0.28.2
       hono:
-        specifier: 4.13.16
-        version: 4.13.16
+        specifier: 4.13.17
+        version: 4.13.17
       ioredis:
         specifier: 6.0.0
         version: 6.0.0(supports-color@10.2.2)
@@ -772,8 +772,8 @@ importers:
   packages/pages:
     dependencies:
       hono:
-        specifier: 4.13.16
-        version: 4.13.16
+        specifier: 4.13.17
+        version: 4.13.17
     devDependencies:
       '@hostmark/contract':
         specifier: workspace:*
@@ -1553,8 +1553,8 @@ packages:
     engines: {node: '>=6'}
     hasBin: true
 
-  '@hono/node-server@2.1.6':
-    resolution: {integrity: sha512-p/KH9MnfNcsm3sR6x4lNgm5j+QN4Et8srKredl9DZfXiyZ1UQ3aQ2YVpFLbqktYN5JI+DB+VZFKM2PqE5hLKjQ==}
+  '@hono/node-server@2.1.7':
+    resolution: {integrity: sha512-Wr0E6S+v2Bw9FkpGNP5BQ5QbJvclUa06UVehd65WFZe6XeJwbrKQQ5wPDevc0IC+QyzbO7v3Llh5uo45IZcSnA==}
     engines: {node: '>=20'}
     peerDependencies:
       hono: ^4 || ^5.0.0-0
@@ -2862,8 +2862,8 @@ packages:
     resolution: {integrity: sha512-EQfezRg0NCZGNlhlDR3Evrw1FVL2G3LhU7EgPoxufQKruNBSYA8MiRPHeWbU+36o+Fhel0wMwM+sLEiBAlNLJA==}
     engines: {node: '>=10.0.0'}
 
-  hono@4.13.16:
-    resolution: {integrity: sha512-AOLOEhvrV+iH92xXCnFr/5+3KjPKcI3xP63XJtX5spAnkznPdHijlIsUTpi7/9EhWqrTCekw5c5zh1K+YsVw7A==}
+  hono@4.13.17:
+    resolution: {integrity: sha512-vZIcbkvjOR5hHRWERbGkr8fGfF0GGM1ooYkuH448iO3b2AdVEr3AXZSw4Z3Kn+1L5z0CVoVeyV29VGYmFh05kQ==}
     engines: {node: '>=16.9.0'}
 
   html-encoding-sniffer@7.0.0:
@@ -4196,21 +4196,21 @@ snapshots:
       protobufjs: 7.6.6
       yargs: 17.7.3
 
-  '@hono/node-server@2.1.6(hono@4.13.16)':
+  '@hono/node-server@2.1.7(hono@4.13.17)':
     dependencies:
-      hono: 4.13.16
+      hono: 4.13.17
 
-  '@hono/zod-openapi@1.6.3(hono@4.13.16)(zod@4.6.7)':
+  '@hono/zod-openapi@1.6.3(hono@4.13.17)(zod@4.6.7)':
     dependencies:
       '@asteasolutions/zod-to-openapi': 9.1.0(zod@4.6.7)
-      '@hono/zod-validator': 0.9.1(hono@4.13.16)(zod@4.6.7)
-      hono: 4.13.16
+      '@hono/zod-validator': 0.9.1(hono@4.13.17)(zod@4.6.7)
+      hono: 4.13.17
       openapi3-ts: 4.6.2
       zod: 4.6.7
 
-  '@hono/zod-validator@0.9.1(hono@4.13.16)(zod@4.6.7)':
+  '@hono/zod-validator@0.9.1(hono@4.13.17)(zod@4.6.7)':
     dependencies:
-      hono: 4.13.16
+      hono: 4.13.17
       zod: 4.6.7
 
   '@img/colour@1.1.0': {}
@@ -5245,7 +5245,7 @@ snapshots:
 
   heap-js@2.7.1: {}
 
-  hono@4.13.16: {}
+  hono@4.13.17: {}
 
   html-encoding-sniffer@7.0.0(@noble/hashes@2.4.0):
     dependencies:
