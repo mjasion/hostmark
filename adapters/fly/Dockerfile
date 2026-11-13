@@ -1,7 +1,7 @@
 # One image for api, worker, scheduler and the one-shot jobs; only the api serves /app/web (D88). Build context is the repository root:
 #   docker build -f adapters/fly/Dockerfile .
 
-FROM node:22.23.4-slim AS build
+FROM node:22.23.5-slim AS build
 RUN npm install --global pnpm@12.18.0
 WORKDIR /repo
 COPY . .
@@ -19,7 +19,7 @@ RUN pnpm --filter @hostmark/web build
 # the Node loader resolves at runtime. Everything else is inside the bundles (see build.mjs).
 RUN pnpm --filter @hostmark/adapter-fly deploy --prod --frozen-lockfile /deploy
 
-FROM node:22.23.4-slim AS runtime
+FROM node:22.23.5-slim AS runtime
 ARG APP_VERSION=dev
 ENV NODE_ENV=production \
     APP_VERSION=$APP_VERSION
