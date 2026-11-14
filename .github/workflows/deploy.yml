@@ -130,7 +130,7 @@ jobs:
         if: matrix.name == 'gcp'
         uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
-          terraform_version: 1.17.1
+          terraform_version: v1.17.2
           terraform_wrapper: false
       # Every secret that platforms.json names, as a reference. A platform's environment holds only its own, the rest
       # are empty. `deploy` names what is missing. The test in tools/platform/platform.test.mjs keeps this list equal
