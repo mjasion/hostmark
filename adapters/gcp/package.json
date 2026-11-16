@@ -12,14 +12,14 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@google-cloud/pubsub": "6.3.2",
+    "@google-cloud/pubsub": "6.4.1",
     "@jsquash/jpeg": "1.6.0",
     "@jsquash/png": "3.1.1",
     "@jsquash/resize": "2.1.1",
     "@jsquash/webp": "1.5.0"
   },
   "devDependencies": {
-    "@hono/node-server": "2.1.6",
+    "@hono/node-server": "2.1.8",
     "@hostmark/auth": "workspace:*",
     "@hostmark/contract": "workspace:*",
     "@hostmark/core": "workspace:*",
@@ -30,7 +30,7 @@
     "@hostmark/telemetry": "workspace:*",
     "aws4fetch": "1.0.20",
     "esbuild": "0.28.2",
-    "hono": "4.13.16",
+    "hono": "4.13.18",
     "tsx": "4.23.15",
     "zod": "4.6.7"
   }
