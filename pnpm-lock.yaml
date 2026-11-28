@@ -576,7 +576,7 @@ importers:
         version: link:../../packages/contract
       '@tanstack/react-query':
         specifier: 5.105.3
-        version: 5.105.3(@types/react@19.3.1)(react@19.3.1)
+        version: 5.105.3(@types/react@19.3.2)(react@19.3.1)
       '@tanstack/react-router':
         specifier: 1.170.46
         version: 1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -598,13 +598,13 @@ importers:
         version: 1.64.1
       '@testing-library/react':
         specifier: 16.3.3
-        version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.1))(@types/react@19.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.2))(@types/react@19.3.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@types/react':
-        specifier: 19.3.1
-        version: 19.3.1
+        specifier: 19.3.2
+        version: 19.3.2
       '@types/react-dom':
         specifier: 19.3.0
-        version: 19.3.0(@types/react@19.3.1)
+        version: 19.3.0(@types/react@19.3.2)
       '@vitejs/plugin-react':
         specifier: 6.2.1
         version: 6.2.1(vite@8.3.6(@types/node@22.20.5)(esbuild@0.28.2)(tsx@4.23.15)(yaml@2.9.1))
@@ -2231,8 +2231,8 @@ packages:
     peerDependencies:
       '@types/react': ^19.3.0
 
-  '@types/react@19.3.1':
-    resolution: {integrity: sha512-HNTkBIm8zmHX8LUXX2vtZ/ONzehrV1J3abl2fUIiZ5qxTYRCj/z+rDeFwOltqCLl9lRdUTKWT41OLtYuFV/Arg==}
+  '@types/react@19.3.2':
+    resolution: {integrity: sha512-0QJbb58RxWJL3VAa5tvk7QhJamz0S+MpFL2xDuF/+THRR+kldyhPjRZ1iwvK45AEHZ1BVGS3otPsl7QlNVRizQ==}
 
   '@typescript/typescript-aix-ppc64@7.0.2':
     resolution: {integrity: sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ==}
@@ -4701,12 +4701,12 @@ snapshots:
 
   '@tanstack/query-core@5.105.3': {}
 
-  '@tanstack/react-query@5.105.3(@types/react@19.3.1)(react@19.3.1)':
+  '@tanstack/react-query@5.105.3(@types/react@19.3.2)(react@19.3.1)':
     dependencies:
       '@tanstack/query-core': 5.105.3
       react: 19.3.1
     optionalDependencies:
-      '@types/react': 19.3.1
+      '@types/react': 19.3.2
 
   '@tanstack/react-router@1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
@@ -4744,15 +4744,15 @@ snapshots:
       picocolors: 1.1.1
       pretty-format: 27.5.1
 
-  '@testing-library/react@16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.1))(@types/react@19.3.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@testing-library/react@16.3.3(@testing-library/dom@10.4.2)(@types/react-dom@19.3.0(@types/react@19.3.2))(@types/react@19.3.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       '@babel/runtime': 7.29.10
       '@testing-library/dom': 10.4.2
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
     optionalDependencies:
-      '@types/react': 19.3.1
-      '@types/react-dom': 19.3.0(@types/react@19.3.1)
+      '@types/react': 19.3.2
+      '@types/react-dom': 19.3.0(@types/react@19.3.2)
 
   '@types/aria-query@5.0.4': {}
 
@@ -4771,11 +4771,11 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
-  '@types/react-dom@19.3.0(@types/react@19.3.1)':
+  '@types/react-dom@19.3.0(@types/react@19.3.2)':
     dependencies:
-      '@types/react': 19.3.1
+      '@types/react': 19.3.2
 
-  '@types/react@19.3.1':
+  '@types/react@19.3.2':
     dependencies:
       csstype: 3.2.3
 
